@@ -5,6 +5,8 @@
   import { categories } from "$lib/data/categories";
   import { toast } from "$lib/toast.svelte";
   import { feedback } from "$lib/feedback.svelte";
+  import { recents } from "$lib/recents.svelte";
+  import { nearby } from "$lib/nearby.svelte";
 
   const STORAGE_KEY = "laewtae:v2";
 
@@ -33,10 +35,17 @@
 
   const category = $derived(categories.find((c) => c.id === selectedId)!);
   const items = $derived(lists[selectedId]);
-  const mapsUrl = $derived(
-    result
-      ? `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(result)}`
-      : "",
+  const mapsUrl = $derived(result ? nearby.url(result) : "");
+
+  // ไม่สุ่มซ้ำภายใน N วัน: ตัดตัวเลือกที่เพิ่งได้เป็นผลออกจากวงล้อ (เหลือไม่ถึง 2 ตัวก็ไม่ตัด)
+  const recent = $derived(recents.recentTitles());
+  const pool = $derived.by(() => {
+    const filtered = items.filter((i) => !recent.has(i));
+    return filtered.length >= 2 ? filtered : items;
+  });
+  const skipped = $derived(items.length - pool.length);
+  const avoidTooMany = $derived(
+    recents.avoidDays > 0 && skipped === 0 && items.some((i) => recent.has(i)),
   );
 
   // ---------- persist ----------
@@ -77,6 +86,7 @@
     feedback.win();
     result = item;
     resultOpen = true;
+    recents.addResult({ title: item, category: selectedId, source: "solo", from: [...pool] });
     if (noRepeat) {
       lists[selectedId] = items.filter((x) => x !== item);
       toast.show(`เอา “${item}” ออกจากวงล้อแล้ว`);
@@ -88,7 +98,8 @@
       lists[selectedId] = items.filter((x) => x !== result);
     }
     resultOpen = false;
-    if (lists[selectedId].length >= 2) spin();
+    // pool = ตัวเลือกที่วงล้อใช้จริง (หลังตัดของที่เพิ่งได้ออกแล้ว)
+    if (pool.length >= 2) spin();
     else toast.show("ตัวเลือกไม่พอสุ่มแล้ว เพิ่มอีกหน่อยนะ");
   }
 
@@ -164,7 +175,7 @@
     <Tabs.Content value={selectedId} class="mt-10 outline-none">
       <Wheel
         bind:this={wheel}
-        {items}
+        items={pool}
         duration={SPEEDS[speed].seconds}
         onresult={onResult}
       />
@@ -175,7 +186,7 @@
   <div class="mt-10">
     <button
       onclick={spin}
-      disabled={spinning || items.length < 2}
+      disabled={spinning || pool.length < 2}
       class="{btnPrimary} w-full py-4 text-base"
     >
       {spinning ? "กำลังสุ่ม…" : "สุ่มเลย"}
@@ -183,6 +194,14 @@
     {#if items.length < 2}
       <p class="mt-2 text-center text-xs text-stone-400">
         ต้องมีอย่างน้อย 2 ตัวเลือก
+      </p>
+    {:else if skipped > 0}
+      <p class="mt-2 text-center text-xs text-stone-400">
+        ตัด {skipped} อย่างที่เพิ่งได้ภายใน {recents.avoidDays} วันออกจากวงล้อ
+      </p>
+    {:else if avoidTooMany}
+      <p class="mt-2 text-center text-xs text-stone-400">
+        ตัวเลือกเหลือน้อยเกินไป เลยยังไม่ตัดของที่เพิ่งได้ออก
       </p>
     {/if}
   </div>
@@ -235,6 +254,34 @@
 
     <div class="flex items-center justify-between gap-4 px-4 py-3">
       <div>
+        <span class="text-sm font-medium text-stone-700">ไม่ซ้ำกับที่เพิ่งได้</span>
+        <p class="text-xs text-stone-400">จำในเครื่องนี้เท่านั้น</p>
+      </div>
+      <ToggleGroup.Root
+        type="single"
+        bind:value={
+          () => String(recents.avoidDays),
+          (v) => {
+            if (v) recents.setAvoidDays(Number(v));
+          }
+        }
+        disabled={spinning}
+        aria-label="ไม่สุ่มซ้ำกับที่ได้ภายในกี่วัน"
+        class="flex rounded-full bg-stone-100 p-0.5"
+      >
+        {#each [["0", "ปิด"], ["3", "3 วัน"], ["7", "7 วัน"], ["14", "14 วัน"]] as [v, label] (v)}
+          <ToggleGroup.Item
+            value={v}
+            class="rounded-full px-2.5 py-1 text-xs font-semibold text-stone-500 transition disabled:opacity-50 data-[state=on]:bg-white data-[state=on]:text-stone-900 data-[state=on]:shadow-sm"
+          >
+            {label}
+          </ToggleGroup.Item>
+        {/each}
+      </ToggleGroup.Root>
+    </div>
+
+    <div class="flex items-center justify-between gap-4 px-4 py-3">
+      <div>
         <Label.Root for="norepeat" class="text-sm font-medium text-stone-700">
           ไม่สุ่มซ้ำ
         </Label.Root>
@@ -276,7 +323,7 @@
         <button onclick={() => again(true)} class={btnGhost}>
           ไม่เอาอันนี้ สุ่มต่อ
         </button>
-        <div class="mt-1 flex justify-center gap-4 text-sm">
+        <div class="mt-1 flex flex-wrap justify-center gap-x-4 gap-y-1 text-sm">
           {#if category.maps}
             <a
               href={mapsUrl}
@@ -284,7 +331,7 @@
               rel="noopener noreferrer"
               class="font-medium text-brand underline-offset-4 hover:underline"
             >
-              เปิดใน Maps
+              📍 ค้นหาใกล้ตัว
             </a>
           {/if}
           <button
@@ -299,6 +346,15 @@
             ปิด
           </Dialog.Close>
         </div>
+        {#if category.maps && nearby.supported && !nearby.coords}
+          <button
+            onclick={() => nearby.request()}
+            disabled={nearby.asking}
+            class="mt-1 text-xs text-stone-400 underline underline-offset-4 hover:text-stone-700 disabled:opacity-50"
+          >
+            {nearby.asking ? "กำลังหาตำแหน่ง…" : "ใช้ตำแหน่งจริงของเครื่องให้แม่นขึ้น"}
+          </button>
+        {/if}
       </div>
     </Dialog.Content>
   </Dialog.Portal>

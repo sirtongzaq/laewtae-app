@@ -7,18 +7,23 @@
   import Toaster from "$lib/components/Toaster.svelte";
   import { feedback } from "$lib/feedback.svelte";
   import { theme } from "$lib/theme.svelte";
+  import { recents } from "$lib/recents.svelte";
+  import { nearby } from "$lib/nearby.svelte";
 
   let { children } = $props();
 
   onMount(() => {
     feedback.init();
     theme.init();
+    recents.init();
+    void nearby.init();
   });
 
   const links = [
     { href: "/", label: "สุ่มเลย", emoji: "🎲" },
     { href: "/vote", label: "โหวตกับเพื่อน", emoji: "🗳️" },
     { href: "/swipe", label: "ปัดกับเพื่อน", emoji: "👆" },
+    { href: "/history", label: "ประวัติการสุ่ม", emoji: "🕘" },
   ];
 
   const isActive = (href: string) =>

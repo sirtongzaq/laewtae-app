@@ -18,6 +18,8 @@
   } from "$lib/room";
   import { toast } from "$lib/toast.svelte";
   import { feedback } from "$lib/feedback.svelte";
+  import { recents } from "$lib/recents.svelte";
+  import { nearby } from "$lib/nearby.svelte";
   import Wheel from "$lib/components/Wheel.svelte";
   import SwipeDeck from "$lib/components/SwipeDeck.svelte";
 
@@ -149,14 +151,43 @@
       : members.filter((m) => votes.some((v) => v.voter_id === m.id)).length,
   );
   const allVoted = $derived(members.length > 0 && votedCount === members.length);
-  const suggestions = $derived(
-    category.items.filter((t) => !options.some((o) => o.title === t)),
-  );
-  const mapsUrl = $derived(
-    room?.winner
-      ? `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(room.winner)}`
-      : "",
-  );
+  // คำแนะนำ: ตัดของที่ถูกเพิ่มแล้ว และเอาของที่เพิ่งได้ภายใน N วันไปไว้ท้ายสุด
+  const recentSet = $derived(recents.recentTitles());
+  const suggestions = $derived.by(() => {
+    const fresh = category.items.filter((t) => !options.some((o) => o.title === t));
+    return [
+      ...fresh.filter((t) => !recentSet.has(t)),
+      ...fresh.filter((t) => recentSet.has(t)),
+    ];
+  });
+  const mapsUrl = $derived(room?.winner ? nearby.url(room.winner) : "");
+
+  // จำห้องนี้ไว้ในเครื่อง + บันทึกผลเมื่อจบ (ไม่ซ้ำตาม ref)
+  $effect(() => {
+    if (!room) return;
+    const r = room;
+    // รอให้โหลดตัวเลือกก่อน จะได้บันทึก "สุ่มจาก..." ครบ (ผลซ้ำถูกกันด้วย ref)
+    const n = options.length;
+    untrack(() => {
+      recents.touchRoom({
+        code,
+        mode: r.mode,
+        category: r.category,
+        expiresAt: Date.parse(r.expires_at),
+        winner: r.winner,
+      });
+      if (r.winner && n > 0) {
+        recents.addResult({
+          title: r.winner,
+          category: r.category,
+          source: r.mode,
+          ref: `${code}:${r.winner}`,
+          from: options.map((o) => o.title),
+          code,
+        });
+      }
+    });
+  });
 
   // ---------- data ----------
   async function fetchOptions() {
@@ -205,6 +236,7 @@
       const found = (data as Room[] | null)?.[0];
       if (!found) {
         notFound = true;
+        recents.forgetRoom(code);
         return;
       }
       room = found;
@@ -1113,8 +1145,17 @@
             rel="noopener noreferrer"
             class="{btnGhost} mt-4"
           >
-            📍 เปิดใน Google Maps
+            📍 ค้นหาใกล้ตัวใน Google Maps
           </a>
+          {#if nearby.supported && !nearby.coords}
+            <button
+              onclick={() => nearby.request()}
+              disabled={nearby.asking}
+              class="mt-2 block w-full text-center text-xs text-stone-400 underline underline-offset-4 hover:text-stone-700 disabled:opacity-50"
+            >
+              {nearby.asking ? "กำลังหาตำแหน่ง…" : "ใช้ตำแหน่งจริงของเครื่องให้แม่นขึ้น"}
+            </button>
+          {/if}
         {/if}
       </section>
 

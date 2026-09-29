@@ -6,6 +6,11 @@
   import { categories } from "$lib/data/categories";
   import { limitMessage, makeCode, normalizeCode, type RoomMode } from "$lib/room";
   import { toast } from "$lib/toast.svelte";
+  import { recents, timeAgo } from "$lib/recents.svelte";
+
+  const catOf = (id: string) => categories.find((c) => c.id === id) ?? categories[0];
+  const myRooms = $derived(recents.rooms.filter((r) => r.mode === mode));
+  const myResults = $derived(recents.results.slice(0, 5));
 
   type Props = {
     mode: RoomMode;
@@ -123,4 +128,56 @@
       <button type="submit" class={btnPrimary}>เข้าห้อง</button>
     </form>
   </section>
+
+  <!-- ห้องล่าสุด (จำในเครื่องนี้ ไม่ต้อง login) -->
+  {#if myRooms.length}
+    <section class="mt-4 rounded-2xl border border-stone-200 bg-white p-5">
+      <h2 class="font-bold">ห้องล่าสุด</h2>
+      <ul class="mt-3 divide-y divide-stone-100">
+        {#each myRooms as r (r.code)}
+          <li>
+            <a
+              href="/room/{r.code}"
+              class="flex items-center gap-3 py-2.5 text-sm transition hover:opacity-70"
+            >
+              <span class="text-xl" aria-hidden="true">{catOf(r.category).emoji}</span>
+              <span class="min-w-0 flex-1">
+                <span class="block truncate font-medium">
+                  {r.winner ?? catOf(r.category).name}
+                </span>
+                <span class="block text-xs text-stone-400">
+                  {timeAgo(r.lastSeen)}{r.winner ? " · ตัดสินแล้ว" : ""}
+                </span>
+              </span>
+              <span class="font-mono text-xs tracking-widest text-stone-500">{r.code}</span>
+            </a>
+          </li>
+        {/each}
+      </ul>
+    </section>
+  {/if}
+
+  <!-- ผลที่เคยได้ -->
+  {#if myResults.length}
+    <section class="mt-4 rounded-2xl border border-stone-200 bg-white p-5">
+      <div class="flex items-center justify-between">
+        <h2 class="font-bold">ผลล่าสุด</h2>
+        <a
+          href="/history"
+          class="text-xs text-stone-400 underline underline-offset-4 hover:text-stone-700"
+        >
+          ดูทั้งหมด
+        </a>
+      </div>
+      <ul class="mt-3 space-y-1.5 text-sm">
+        {#each myResults as r (r.at + r.title)}
+          <li class="flex items-center gap-2">
+            <span aria-hidden="true">{catOf(r.category).emoji}</span>
+            <span class="min-w-0 flex-1 truncate">{r.title}</span>
+            <span class="text-xs text-stone-400">{timeAgo(r.at)}</span>
+          </li>
+        {/each}
+      </ul>
+    </section>
+  {/if}
 </main>
