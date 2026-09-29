@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount, onDestroy } from "svelte";
+  import { onMount, onDestroy, tick, untrack } from "svelte";
   import { page } from "$app/state";
   import { Dialog } from "bits-ui";
   import type { RealtimeChannel } from "@supabase/supabase-js";
@@ -7,6 +7,11 @@
   import { categories } from "$lib/data/categories";
   import { randomInt, type Room, type Option, type Vote, type Member } from "$lib/room";
   import { toast } from "$lib/toast.svelte";
+  import { feedback } from "$lib/feedback.svelte";
+  import Wheel from "$lib/components/Wheel.svelte";
+
+  /** ข้อมูลที่ host broadcast ให้ทุกเครื่องหมุนวงล้อตัดสินให้เหมือนกัน */
+  type TiebreakPayload = { items: string[]; index: number; jitter: number };
 
   const NAME_KEY = "laewtae:name";
   const code = (page.params.code ?? "").toUpperCase();
@@ -28,6 +33,18 @@
   let connected = $state(false);
   let ready = $state(false);
   let newItem = $state("");
+
+  // วงล้อตัดสินตอนคะแนนเสมอ
+  let tbWheel = $state<ReturnType<typeof Wheel> | undefined>();
+  let tbItems = $state<string[] | null>(null);
+  let tbSpinning = $state(false);
+  let tbSeen = $state(false); // เครื่องนี้เริ่มหมุนวงล้อตัดสินในรอบนี้แล้ว (กันเสียง/นับถอยหลังซ้ำ)
+
+  // นับถอยหลังอัตโนมัติ (ค่าที่เหลือ หรือ null เมื่อไม่ได้นับ)
+  let lobbyCd = $state<number | null>(null);
+  let tbCd = $state<number | null>(null);
+  let voteCd = $state<number | null>(null);
+  let destroyed = false;
 
   let channel: RealtimeChannel | null = null;
   const joinedAt = Date.now();
@@ -56,8 +73,31 @@
   );
   const ranking = $derived([...tally].sort((a, b) => b.count - a.count));
   const maxCount = $derived(Math.max(0, ...tally.map((t) => t.count)));
-  const tiedCount = $derived(
-    maxCount > 0 ? tally.filter((t) => t.count === maxCount).length : 0,
+  const tiedOptions = $derived(
+    maxCount > 0 ? tally.filter((t) => t.count === maxCount) : [],
+  );
+  const tiedCount = $derived(tiedOptions.length);
+  // ปิดโหวตแล้วแต่ยังไม่มีผู้ชนะ = คะแนนเสมอ รอหมุนวงล้อตัดสิน
+  const inTiebreak = $derived(room?.status === "done" && !room.winner);
+  const showWheel = $derived(inTiebreak || tbSpinning);
+  const wheelItems = $derived(tbItems ?? tiedOptions.map((t) => t.title));
+
+  // เงื่อนไขเริ่มนับถอยหลังอัตโนมัติ
+  // - เริ่มโหวต: มีเพื่อนอย่างน้อย 1 คน + ทุกคนกดพร้อม + มีตัวเลือก ≥ 2 (เล่นคนเดียวใช้ปุ่มเอง)
+  // - วงล้อตัดสิน: คะแนนเสมอและยังไม่เคยหมุน
+  const autoStartOk = $derived(
+    connected &&
+      room?.status === "lobby" &&
+      guests.length >= 1 &&
+      notReady.length === 0 &&
+      options.length >= 2,
+  );
+  // - ประกาศผล: ทุกคนที่อยู่ในห้องโหวตครบแล้ว
+  const autoFinishOk = $derived(
+    connected && room?.status === "voting" && votes.length > 0 && allVoted,
+  );
+  const autoTiebreakOk = $derived(
+    connected && inTiebreak && !tbSeen && !tbSpinning && wheelItems.length >= 2,
   );
   const myVote = $derived(votes.find((v) => v.voter_id === me)?.option_id ?? null);
   const votedCount = $derived(
@@ -123,13 +163,14 @@
   });
 
   onDestroy(() => {
+    destroyed = true;
     if (channel) supabase.removeChannel(channel);
   });
 
   // ---------- realtime ----------
   function connect(r: Room) {
     const ch = supabase.channel(`room:${r.id}`, {
-      config: { presence: { key: me! } },
+      config: { presence: { key: me! }, broadcast: { self: false } },
     });
     channel = ch;
 
@@ -157,6 +198,10 @@
       .on("postgres_changes", { event: "DELETE", schema: "public", table: "votes" }, (p) => {
         if ((p.old as Partial<Vote>).room_id === r.id) fetchVotes();
       })
+      // host สั่งหมุนวงล้อตัดสิน → ทุกเครื่องหมุนไปหยุดที่ชิ้นเดียวกัน
+      .on("broadcast", { event: "tiebreak" }, ({ payload }) => {
+        startTiebreak(payload as TiebreakPayload);
+      })
       .on("presence", { event: "sync" }, () => {
         const state = ch.presenceState<{ name: string; ready: boolean; at: number }>();
         members = Object.entries(state).map(([id, metas]) => {
@@ -183,9 +228,148 @@
     announce();
   });
 
-  // เริ่มรอบใหม่ → ทุกคนต้องกดพร้อมใหม่
+  // เริ่มรอบใหม่ → ทุกคนต้องกดพร้อมใหม่ + ล้างสถานะวงล้อตัดสิน
   $effect(() => {
-    if (room?.status === "lobby") ready = false;
+    if (room?.status === "lobby") {
+      ready = false;
+      tbItems = null;
+      tbSeen = false;
+    }
+  });
+
+  // ---------- นับถอยหลังอัตโนมัติ ----------
+  // ทุกเครื่องนับเองจากสถานะที่ซิงก์กันอยู่แล้ว (presence / options) — เจ้าของห้องเป็นคนลงมือตอนนับจบ
+  function runCountdown(
+    seconds: number,
+    text: (n: number) => string,
+    onTick: (n: number) => void,
+    onDone: () => void,
+  ) {
+    let n = seconds;
+    const id = toast.show(text(n), 0); // 0 = ค้างไว้จนกว่าจะนับจบ/ยกเลิก
+    onTick(n);
+    feedback.tap();
+    const timer = setInterval(() => {
+      n -= 1;
+      if (n <= 0) {
+        clearInterval(timer);
+        toast.dismiss(id);
+        onDone();
+        return;
+      }
+      toast.update(id, text(n));
+      onTick(n);
+      feedback.tap();
+    }, 1000);
+    return {
+      stop() {
+        clearInterval(timer);
+        toast.dismiss(id);
+      },
+    };
+  }
+
+  // ทุกคนพร้อม → นับ 5 วิแล้วเริ่มโหวต (host ยังกดเริ่มเองได้ทันที)
+  $effect(() => {
+    if (!autoStartOk) return;
+    let finished = false;
+    // untrack: toast/feedback อ่าน $state ภายใน ไม่ให้ effect นี้ไปติดตามแล้วรีสตาร์ทตัวเอง
+    const cd = untrack(() =>
+      runCountdown(
+        5,
+        (n) => `ทุกคนพร้อมแล้ว เริ่มโหวตใน ${n}…`,
+        (n) => (lobbyCd = n),
+        () => {
+          finished = true;
+          lobbyCd = null;
+          if (isHost) startVoting();
+        },
+      ),
+    );
+    return () => {
+      cd.stop();
+      lobbyCd = null;
+      // มีคนยกเลิกพร้อม/เข้าห้องใหม่/ลบตัวเลือก ระหว่างนับ (ไม่ใช่เพราะเริ่มโหวตไปแล้ว)
+      if (!finished && !destroyed && room?.status === "lobby") {
+        toast.show("ยกเลิกการนับถอยหลัง");
+      }
+    };
+  });
+
+  // ทุกคนโหวตครบ → นับ 5 วิแล้วประกาศผล (host กดประกาศเองก่อนได้)
+  $effect(() => {
+    if (!autoFinishOk) return;
+    let finished = false;
+    const cd = untrack(() =>
+      runCountdown(
+        5,
+        (n) => `ทุกคนโหวตครบแล้ว ประกาศผลใน ${n}…`,
+        (n) => (voteCd = n),
+        () => {
+          finished = true;
+          voteCd = null;
+          if (isHost) finish();
+        },
+      ),
+    );
+    return () => {
+      cd.stop();
+      voteCd = null;
+      // มีคนเข้าห้องใหม่ที่ยังไม่ได้โหวตระหว่างนับ (ไม่ใช่เพราะประกาศผลไปแล้ว)
+      if (!finished && !destroyed && room?.status === "voting") {
+        toast.show("ยกเลิกการนับถอยหลัง");
+      }
+    };
+  });
+
+  // คะแนนเสมอ → นับ 3 วิแล้วหมุนวงล้อตัดสินอัตโนมัติ (host กดหมุนเองก่อนได้)
+  $effect(() => {
+    if (!autoTiebreakOk) return;
+    const cd = untrack(() =>
+      runCountdown(
+        3,
+        (n) => `คะแนนเสมอ! วงล้อจะหมุนใน ${n}…`,
+        (n) => (tbCd = n),
+        () => {
+          tbCd = null;
+          if (isHost) spinTiebreak();
+        },
+      ),
+    );
+    return () => {
+      cd.stop();
+      tbCd = null;
+    };
+  });
+
+  // ---------- เสียง / สั่น ----------
+  let knownVoters = new Set<string>();
+  $effect(() => {
+    const ids = new Set(votes.map((v) => v.voter_id));
+    if (room?.status === "voting") {
+      // มีคนอื่นโหวตใหม่ → เสียงเบา ๆ (โหวตของตัวเองเล่นตอนกดอยู่แล้ว)
+      for (const id of ids) {
+        if (!knownVoters.has(id) && id !== me) {
+          feedback.tap();
+          break;
+        }
+      }
+    }
+    knownVoters = ids;
+  });
+
+  let prevStatus: string | null = null;
+  $effect(() => {
+    const s = room?.status ?? null;
+    if (prevStatus && s === "voting" && prevStatus !== "voting") feedback.start();
+    prevStatus = s;
+  });
+
+  let prevWinner: string | null = null;
+  $effect(() => {
+    const w = room?.winner ?? null;
+    if (!loading && w && w !== prevWinner && !tbSeen) feedback.win();
+    prevWinner = w;
   });
 
   // ---------- actions ----------
@@ -266,6 +450,7 @@
 
   async function castVote(optionId: string) {
     if (!room || !me || room.status !== "voting") return;
+    feedback.vote();
     const { error } = await supabase.from("votes").upsert(
       { room_id: room.id, voter_id: me, option_id: optionId, voter_name: name },
       { onConflict: "room_id,voter_id" },
@@ -279,9 +464,46 @@
       toast.show("ยังไม่มีใครโหวตเลย");
       return;
     }
-    const top = tally.filter((t) => t.count === maxCount);
-    const pick = top[randomInt(top.length)]; // เสมอ → สุ่มตัดสิน
-    await updateRoom({ status: "done", winner: pick.title });
+    // เสมอ → ปิดโหวตโดยยังไม่มีผู้ชนะ แล้วให้ host หมุนวงล้อตัดสิน (ทุกคนเห็นพร้อมกัน)
+    const winner = tiedOptions.length === 1 ? tiedOptions[0].title : null;
+    await updateRoom({ status: "done", winner });
+  }
+
+  async function startTiebreak(p: TiebreakPayload) {
+    tbSeen = true;
+    tbItems = p.items;
+    tbSpinning = true;
+    // รอให้ Wheel mount (เผื่อ status ห้องยังอัปเดตมาไม่ถึง)
+    for (let i = 0; i < 20 && !tbWheel; i++) {
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    await tick();
+    if (!tbWheel) {
+      tbSpinning = false;
+      return;
+    }
+    feedback.start();
+    tbWheel.spinTo(p.index, p.jitter);
+  }
+
+  async function spinTiebreak() {
+    if (!isHost || !channel || tbSpinning) return;
+    const items = tiedOptions.map((t) => t.title);
+    if (items.length < 2) return;
+    const payload: TiebreakPayload = {
+      items,
+      index: randomInt(items.length),
+      jitter: (randomInt(1000) / 1000 - 0.5) * 0.7,
+    };
+    await channel.send({ type: "broadcast", event: "tiebreak", payload });
+    await startTiebreak(payload);
+  }
+
+  function onTbResult(item: string) {
+    tbSpinning = false;
+    feedback.win();
+    // host เป็นคนบันทึกผู้ชนะ → ทุกคนเห็นผลสุดท้ายผ่าน Realtime
+    if (isHost) updateRoom({ status: "done", winner: item });
   }
 
   async function newRound() {
@@ -316,7 +538,9 @@
     <div class="py-20 text-center">
       <p class="text-5xl" aria-hidden="true">🔍</p>
       <h1 class="mt-4 text-xl font-bold">ไม่พบห้อง {code}</h1>
-      <p class="mt-1 text-sm text-stone-500">เช็กรหัสอีกครั้ง หรือสร้างห้องใหม่</p>
+      <p class="mt-1 text-sm text-stone-500">
+        เช็กรหัสอีกครั้ง หรือห้องอาจหมดอายุแล้ว (ห้องอยู่ได้ 24 ชั่วโมง)
+      </p>
       <a href="/vote" class="{btnPrimary} mt-6">กลับไปหน้าโหวต</a>
     </div>
   {:else if fatal}
@@ -342,6 +566,14 @@
 
       <p class="mt-3 text-xs text-stone-400">รหัสห้อง</p>
       <p class="font-mono text-4xl font-extrabold tracking-[0.3em]">{code}</p>
+      <p class="mt-1 text-xs text-stone-400">
+        ห้องนี้หมดอายุ {new Date(room.expires_at).toLocaleString("th-TH", {
+          day: "numeric",
+          month: "short",
+          hour: "2-digit",
+          minute: "2-digit",
+        })}
+      </p>
 
       <div class="mt-4 flex gap-2">
         <button onclick={copyLink} class="{btnPrimary} flex-1">คัดลอกลิงก์</button>
@@ -488,20 +720,25 @@
       <section class="mt-4">
         {#if isHost}
           <button onclick={startVoting} disabled={!canStart} class="{btnPrimary} w-full py-4 text-base">
-            เริ่มโหวต
+            {lobbyCd !== null ? "เริ่มเลยตอนนี้" : "เริ่มโหวต"}
           </button>
           <p class="mt-2 text-center text-xs text-stone-500" role="status">
             {#if options.length < 2}
               ต้องมีอย่างน้อย 2 ตัวเลือก
             {:else if notReady.length > 0}
               รอ {notReady.map((m) => m.name).join(", ")} กดพร้อม
+            {:else if lobbyCd !== null}
+              เริ่มอัตโนมัติใน {lobbyCd} วินาที (หรือกดเริ่มเลยก็ได้)
             {:else}
               ทุกคนพร้อมแล้ว เริ่มได้เลย 🎉
             {/if}
           </p>
         {:else}
           <button
-            onclick={() => (ready = !ready)}
+            onclick={() => {
+              ready = !ready;
+              feedback.tap();
+            }}
             aria-pressed={ready}
             class="w-full rounded-full py-4 text-base font-semibold transition active:scale-[0.98] {ready
               ? 'bg-emerald-600 text-white hover:bg-emerald-700'
@@ -510,7 +747,13 @@
             {ready ? "✓ พร้อมแล้ว (กดอีกครั้งเพื่อยกเลิก)" : "พร้อมแล้ว"}
           </button>
           <p class="mt-2 text-center text-xs text-stone-500" role="status">
-            {ready ? "รอเจ้าของห้องเริ่มโหวต…" : "เพิ่มตัวเลือกให้ครบ แล้วกดพร้อม"}
+            {#if !ready}
+              เพิ่มตัวเลือกให้ครบ แล้วกดพร้อม
+            {:else if lobbyCd !== null}
+              ทุกคนพร้อมแล้ว เริ่มโหวตใน {lobbyCd}…
+            {:else}
+              รอเจ้าของห้องเริ่มโหวต…
+            {/if}
           </p>
         {/if}
       </section>
@@ -563,16 +806,64 @@
               ? 'bg-brand text-white hover:opacity-90'
               : 'bg-stone-900 text-white hover:bg-stone-700'}"
           >
-            {allVoted ? "ทุกคนโหวตครบแล้ว — ประกาศผล" : "ปิดโหวตและประกาศผล"}
+            {voteCd !== null
+              ? "ประกาศผลเลยตอนนี้"
+              : allVoted
+                ? "ทุกคนโหวตครบแล้ว — ประกาศผล"
+                : "ปิดโหวตและประกาศผล"}
           </button>
+          {#if voteCd !== null}
+            <p class="mt-2 text-center text-xs text-stone-500" role="status">
+              ประกาศผลอัตโนมัติใน {voteCd} วินาที (หรือกดประกาศเลยก็ได้)
+            </p>
+          {/if}
         {:else}
           <p class="text-center text-sm text-stone-500" role="status">
-            {myVote ? "โหวตแล้ว เปลี่ยนใจได้จนกว่าเจ้าของห้องจะปิดโหวต" : "แตะตัวเลือกเพื่อโหวต"}
+            {#if voteCd !== null}
+              ทุกคนโหวตครบแล้ว ประกาศผลใน {voteCd}…
+            {:else if myVote}
+              โหวตแล้ว เปลี่ยนใจได้จนกว่าเจ้าของห้องจะปิดโหวต
+            {:else}
+              แตะตัวเลือกเพื่อโหวต
+            {/if}
           </p>
         {/if}
       </section>
 
       <!-- ================= DONE ================= -->
+    {:else if showWheel}
+      <!-- คะแนนเสมอ: หมุนวงล้อตัดสิน (ทุกเครื่องเห็นพร้อมกัน) -->
+      <section class="{card} mt-4 text-center">
+        <p class="text-sm text-stone-500">คะแนนเสมอ {wheelItems.length} อย่าง 🎲</p>
+        <p class="mt-1 font-bold">หมุนวงล้อตัดสิน</p>
+        <div class="mt-8 px-2">
+          <Wheel bind:this={tbWheel} items={wheelItems} onresult={onTbResult} />
+        </div>
+        {#if isHost}
+          <button
+            onclick={spinTiebreak}
+            disabled={tbSpinning}
+            class="{btnPrimary} mt-8 w-full py-4 text-base"
+          >
+            {tbSpinning ? "กำลังหมุน…" : tbCd !== null ? "หมุนเลยตอนนี้" : "หมุนเลย!"}
+          </button>
+          {#if tbCd !== null}
+            <p class="mt-2 text-xs text-stone-500" role="status">
+              หมุนอัตโนมัติใน {tbCd} วินาที
+            </p>
+          {/if}
+        {:else}
+          <p class="mt-8 text-sm text-stone-500" role="status">
+            {#if tbSpinning}
+              กำลังหมุน…
+            {:else if tbCd !== null}
+              วงล้อจะหมุนใน {tbCd}…
+            {:else}
+              รอเจ้าของห้องหมุนวงล้อ…
+            {/if}
+          </p>
+        {/if}
+      </section>
     {:else}
       <section class="{card} mt-4 text-center">
         <p class="text-sm text-stone-500">ผลโหวต — เอาอันนี้!</p>
@@ -581,7 +872,7 @@
           {room.winner}
         </p>
         {#if tiedCount > 1}
-          <p class="mt-2 text-xs text-stone-500">คะแนนเสมอ {tiedCount} อย่าง ระบบสุ่มตัดสินให้แล้ว 🎲</p>
+          <p class="mt-2 text-xs text-stone-500">คะแนนเสมอ {tiedCount} อย่าง หมุนวงล้อตัดสินแล้ว 🎲</p>
         {/if}
         {#if category.maps && room.winner}
           <a

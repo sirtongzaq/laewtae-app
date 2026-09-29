@@ -4,6 +4,7 @@
   import Wheel from "$lib/components/Wheel.svelte";
   import { categories } from "$lib/data/categories";
   import { toast } from "$lib/toast.svelte";
+  import { feedback } from "$lib/feedback.svelte";
 
   const STORAGE_KEY = "laewtae:v2";
 
@@ -67,11 +68,13 @@
   function spin() {
     result = null;
     spinning = true;
+    feedback.start();
     wheel.spin();
   }
 
   function onResult(item: string) {
     spinning = false;
+    feedback.win();
     result = item;
     resultOpen = true;
     if (noRepeat) {

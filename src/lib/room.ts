@@ -8,6 +8,7 @@ export type Room = {
   winner: string | null;
   host_id: string;
   created_at: string;
+  expires_at: string;
 };
 
 export type Option = {

@@ -48,18 +48,26 @@
     return buf[0] / 2 ** 32;
   }
 
-  export function spin() {
-    if (spinning || n < 2) return;
+  /**
+   * หมุนไปหยุดที่ชิ้นที่กำหนด (deterministic — ใช้ซิงก์หลายเครื่องผ่าน Realtime)
+   * @param index ชิ้นที่ชนะ
+   * @param jitter ตำแหน่งภายในชิ้น -0.35…0.35 (สัดส่วนของชิ้น) ไม่ให้เข็มชี้กลางเป๊ะ
+   */
+  export function spinTo(index: number, jitter = 0) {
+    if (spinning || n < 2 || index < 0 || index >= n) return;
     spinning = true;
-
-    const winner = Math.floor(randomFloat() * n);
-    pendingIndex = winner;
+    pendingIndex = index;
 
     // เข็มอยู่ด้านบน: มุมของวงล้อที่เข็มชี้ = (360 - rotation) mod 360
-    const center = (winner + 0.5) * slice;
-    const jitter = (randomFloat() - 0.5) * slice * 0.7;
+    const center = (index + 0.5) * slice;
     const base = Math.ceil(rotation / 360) * 360;
-    rotation = base + 360 * 6 + (360 - center) + jitter;
+    rotation = base + 360 * 6 + (360 - center) + jitter * slice;
+  }
+
+  /** สุ่มเอง (โหมดปกติ) */
+  export function spin() {
+    if (spinning || n < 2) return;
+    spinTo(Math.floor(randomFloat() * n), (randomFloat() - 0.5) * 0.7);
   }
 
   function onEnd(e: TransitionEvent) {

@@ -3,9 +3,13 @@
   import favicon from "$lib/assets/favicon.svg";
   import { page } from "$app/state";
   import { DropdownMenu, Tooltip } from "bits-ui";
+  import { onMount } from "svelte";
   import Toaster from "$lib/components/Toaster.svelte";
+  import { feedback } from "$lib/feedback.svelte";
 
   let { children } = $props();
+
+  onMount(() => feedback.init());
 
   const links = [
     { href: "/", label: "สุ่มเลย", emoji: "🎲" },
@@ -35,6 +39,33 @@
     <a href="/" class="text-xl font-extrabold tracking-tight">
       แล้วแต่<span class="text-brand">.</span>
     </a>
+
+    <div class="flex items-center gap-2">
+    <!-- เปิด/ปิดเสียงและการสั่น -->
+    <button
+      onclick={() => feedback.setEnabled(!feedback.enabled)}
+      aria-pressed={feedback.enabled}
+      aria-label={feedback.enabled ? "ปิดเสียงและการสั่น" : "เปิดเสียงและการสั่น"}
+      class="flex size-11 items-center justify-center rounded-full border border-stone-300 bg-white text-stone-800 transition hover:bg-stone-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-stone-900"
+    >
+      <svg
+        viewBox="0 0 24 24"
+        class="size-5"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="2"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        aria-hidden="true"
+      >
+        <path d="M11 5 6 9H3v6h3l5 4V5Z" />
+        {#if feedback.enabled}
+          <path d="M15.5 8.5a5 5 0 0 1 0 7M18.5 5.5a9 9 0 0 1 0 13" />
+        {:else}
+          <path d="m16 9 5 6m0-6-5 6" />
+        {/if}
+      </svg>
+    </button>
 
     <!-- เมนูเปลี่ยนหน้า -->
     <DropdownMenu.Root>
@@ -83,6 +114,7 @@
         </DropdownMenu.Content>
       </DropdownMenu.Portal>
     </DropdownMenu.Root>
+    </div>
   </header>
 
   {@render children()}
