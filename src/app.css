@@ -47,9 +47,69 @@
 }
 
 @layer base {
+	:root {
+		/* ให้ input / scrollbar / เมนูของเบราว์เซอร์เปลี่ยนสีตามโหมดด้วย */
+		color-scheme: light dark;
+	}
+	:root[data-theme='light'] {
+		color-scheme: light;
+	}
+	:root[data-theme='dark'] {
+		color-scheme: dark;
+	}
 	body {
-		background: #fafaf9;
-		color: #1c1917;
+		background: var(--color-stone-50);
+		color: var(--color-stone-900);
 		-webkit-tap-highlight-color: transparent;
 	}
+}
+
+/*
+ * Dark mode
+ * วิธี: สลับค่า "พาเลตต์สี" ของ Tailwind ทั้งชุดแทนการใส่ dark: ทีละ class
+ *   → bg-white / stone-* / emerald-* / rose-* ที่ใช้อยู่ทั้งแอปเปลี่ยนตามอัตโนมัติ
+ *   (stone กลับด้าน: 50 = มืดสุด, 900 = สว่างสุด — ปุ่มหลัก bg-stone-900 จึงกลายเป็นปุ่มสีสว่างตัวอักษรเข้ม)
+ *
+ * ใช้ 2 ทาง (ค่าสีต้องเหมือนกัน — แก้สองที่พร้อมกัน):
+ *   1) ผู้ใช้กดปุ่มสลับเอง → <html data-theme="dark"> (ตั้งค่าโดย src/lib/theme.svelte.ts + สคริปต์ใน app.html)
+ *   2) ยังไม่มี data-theme (เช่น ปิด JavaScript) → ตามระบบ prefers-color-scheme
+ */
+@media (prefers-color-scheme: dark) {
+	:root:not([data-theme]) {
+		--color-white: #262322; /* พื้นการ์ด */
+		--color-stone-50: #1a1716; /* พื้นหน้าเว็บ */
+		--color-stone-100: #302c2a;
+		--color-stone-200: #44403c; /* เส้นขอบ */
+		--color-stone-300: #57534e;
+		--color-stone-400: #8a837e;
+		--color-stone-500: #a8a29e;
+		--color-stone-600: #d6d3d1;
+		--color-stone-700: #e7e5e4;
+		--color-stone-800: #f5f5f4;
+		--color-stone-900: #fafaf9;
+
+		--color-emerald-50: #022c22;
+		--color-emerald-100: #064e3b;
+		--color-emerald-700: #6ee7b7;
+		--color-rose-50: #4c0519;
+	}
+}
+
+:root[data-theme='dark'] {
+	--color-white: #262322; /* พื้นการ์ด */
+	--color-stone-50: #1a1716; /* พื้นหน้าเว็บ */
+	--color-stone-100: #302c2a;
+	--color-stone-200: #44403c; /* เส้นขอบ */
+	--color-stone-300: #57534e;
+	--color-stone-400: #8a837e;
+	--color-stone-500: #a8a29e;
+	--color-stone-600: #d6d3d1;
+	--color-stone-700: #e7e5e4;
+	--color-stone-800: #f5f5f4;
+	--color-stone-900: #fafaf9;
+
+	--color-emerald-50: #022c22;
+	--color-emerald-100: #064e3b;
+	--color-emerald-700: #6ee7b7;
+	--color-rose-50: #4c0519;
 }

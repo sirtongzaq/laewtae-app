@@ -30,10 +30,11 @@
     return `M${C},${C} L${x1},${y1} A${C},${C} 0 ${large} 1 ${x2},${y2} Z`;
   }
 
-  // มินิมอล: สลับขาว / เทาอ่อน (ชิ้นสุดท้ายไม่ซ้ำสีกับชิ้นแรกเมื่อจำนวนคี่)
-  function fill(i: number) {
-    if (n > 1 && n % 2 === 1 && i === n - 1) return "#e7e5e4";
-    return i % 2 === 0 ? "#ffffff" : "#f5f5f4";
+  // มินิมอล: สลับสีพื้นสองโทน (ชิ้นสุดท้ายไม่ซ้ำสีกับชิ้นแรกเมื่อจำนวนคี่)
+  // ใช้ class ของ Tailwind (fill-*) เพื่อให้เปลี่ยนตาม dark mode อัตโนมัติ
+  function fillCls(i: number) {
+    if (n > 1 && n % 2 === 1 && i === n - 1) return "fill-stone-200";
+    return i % 2 === 0 ? "fill-white" : "fill-stone-100";
   }
 
   function label(text: string) {
@@ -86,8 +87,7 @@
     <svg width="26" height="30" viewBox="0 0 26 30">
       <path
         d="M13 30 L2 6 Q13 -3 24 6 Z"
-        fill="#ff6b35"
-        stroke="#fafaf9"
+        class="fill-brand stroke-stone-50"
         stroke-width="3"
         stroke-linejoin="round"
       />
@@ -110,7 +110,7 @@
           dominant-baseline="middle"
           font-size="12"
           font-weight="600"
-          fill="#44403c">เพิ่มตัวเลือกก่อนนะ</text
+          class="fill-stone-700">เพิ่มตัวเลือกก่อนนะ</text
         >
       {:else if n === 1}
         <text
@@ -120,14 +120,13 @@
           dominant-baseline="middle"
           font-size="11"
           font-weight="600"
-          fill="#1c1917">{label(items[0])}</text
+          class="fill-stone-900">{label(items[0])}</text
         >
       {:else}
         {#each items as item, i (i + item)}
           <path
             d={slicePath(i)}
-            fill={fill(i)}
-            stroke="#d6d3d1"
+            class="{fillCls(i)} stroke-stone-300"
             stroke-width="0.5"
           />
           <text
@@ -138,13 +137,13 @@
             dominant-baseline="middle"
             font-size={fontSize}
             font-weight="600"
-            fill="#292524">{label(item)}</text
+            class="fill-stone-800">{label(item)}</text
           >
         {/each}
       {/if}
       {#if n >= 2}
-        <circle cx={C} cy={C} r="8" fill="#fafaf9" stroke="#d6d3d1" />
-        <circle cx={C} cy={C} r="3" fill="#ff6b35" />
+        <circle cx={C} cy={C} r="8" class="fill-stone-50 stroke-stone-300" />
+        <circle cx={C} cy={C} r="3" class="fill-brand" />
       {/if}
     </svg>
   </div>

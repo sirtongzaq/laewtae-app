@@ -6,10 +6,14 @@
   import { onMount } from "svelte";
   import Toaster from "$lib/components/Toaster.svelte";
   import { feedback } from "$lib/feedback.svelte";
+  import { theme } from "$lib/theme.svelte";
 
   let { children } = $props();
 
-  onMount(() => feedback.init());
+  onMount(() => {
+    feedback.init();
+    theme.init();
+  });
 
   const links = [
     { href: "/", label: "สุ่มเลย", emoji: "🎲" },
@@ -64,6 +68,35 @@
           <path d="M15.5 8.5a5 5 0 0 1 0 7M18.5 5.5a9 9 0 0 1 0 13" />
         {:else}
           <path d="m16 9 5 6m0-6-5 6" />
+        {/if}
+      </svg>
+    </button>
+
+    <!-- สลับธีมสว่าง / มืด -->
+    <button
+      onclick={() => theme.toggle()}
+      aria-label={theme.current === "dark" ? "เปลี่ยนเป็นโหมดสว่าง" : "เปลี่ยนเป็นโหมดมืด"}
+      class="flex size-11 items-center justify-center rounded-full border border-stone-300 bg-white text-stone-800 transition hover:bg-stone-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-stone-900"
+    >
+      <svg
+        viewBox="0 0 24 24"
+        class="size-5"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="2"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        aria-hidden="true"
+      >
+        {#if theme.current === "dark"}
+          <!-- ดวงอาทิตย์ (กดเพื่อกลับไปสว่าง) -->
+          <circle cx="12" cy="12" r="4" />
+          <path
+            d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"
+          />
+        {:else}
+          <!-- พระจันทร์ (กดเพื่อไปมืด) -->
+          <path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8Z" />
         {/if}
       </svg>
     </button>

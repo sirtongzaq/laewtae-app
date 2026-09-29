@@ -841,7 +841,7 @@
             }}
             aria-pressed={ready}
             class="w-full rounded-full py-4 text-base font-semibold transition active:scale-[0.98] {ready
-              ? 'bg-emerald-600 text-white hover:bg-emerald-700'
+              ? 'bg-emerald-600 text-white hover:bg-emerald-500'
               : 'bg-stone-900 text-white hover:bg-stone-700'}"
           >
             {ready ? "✓ พร้อมแล้ว (กดอีกครั้งเพื่อยกเลิก)" : "พร้อมแล้ว"}
@@ -1043,7 +1043,7 @@
 >
   <Dialog.Portal>
     <Dialog.Overlay
-      class="fixed inset-0 z-40 bg-stone-900/30 backdrop-blur-[2px] data-[state=closed]:animate-fade-out data-[state=open]:animate-fade-in"
+      class="fixed inset-0 z-40 bg-black/40 backdrop-blur-[2px] data-[state=closed]:animate-fade-out data-[state=open]:animate-fade-in"
     />
     <Dialog.Content
       interactOutsideBehavior="ignore"

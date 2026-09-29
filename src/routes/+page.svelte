@@ -125,7 +125,7 @@
 
   // ---------- shared classes ----------
   const overlayCls =
-    "fixed inset-0 z-40 bg-stone-900/30 backdrop-blur-[2px] data-[state=open]:animate-fade-in data-[state=closed]:animate-fade-out";
+    "fixed inset-0 z-40 bg-black/40 backdrop-blur-[2px] data-[state=open]:animate-fade-in data-[state=closed]:animate-fade-out";
   const btnPrimary =
     "inline-flex items-center justify-center rounded-full bg-stone-900 px-5 py-3 text-sm font-semibold text-white transition hover:bg-stone-700 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-40";
   const btnGhost =
