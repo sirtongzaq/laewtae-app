@@ -1,21 +1,12 @@
 <script lang="ts">
   type Props = {
     items: string[];
+    /** ระยะเวลาหมุน (วินาที) */
+    duration?: number;
     onresult?: (item: string, index: number) => void;
   };
 
-  let { items, onresult }: Props = $props();
-
-  const COLORS = [
-    "#ff6b35",
-    "#f7b32b",
-    "#2ec4b6",
-    "#e71d36",
-    "#5fa8d3",
-    "#8ac926",
-    "#9b5de5",
-    "#ff8fab",
-  ];
+  let { items, duration = 5, onresult }: Props = $props();
 
   const SIZE = 200;
   const C = SIZE / 2;
@@ -39,10 +30,10 @@
     return `M${C},${C} L${x1},${y1} A${C},${C} 0 ${large} 1 ${x2},${y2} Z`;
   }
 
-  function color(i: number) {
-    // ไม่ให้สีชิ้นสุดท้ายซ้ำกับชิ้นแรก
-    if (n > 1 && i === n - 1 && i % COLORS.length === 0) return COLORS[1];
-    return COLORS[i % COLORS.length];
+  // มินิมอล: สลับขาว / เทาอ่อน (ชิ้นสุดท้ายไม่ซ้ำสีกับชิ้นแรกเมื่อจำนวนคี่)
+  function fill(i: number) {
+    if (n > 1 && n % 2 === 1 && i === n - 1) return "#e7e5e4";
+    return i % 2 === 0 ? "#ffffff" : "#f5f5f4";
   }
 
   function label(text: string) {
@@ -66,7 +57,7 @@
 
     // เข็มอยู่ด้านบน: มุมของวงล้อที่เข็มชี้ = (360 - rotation) mod 360
     const center = (winner + 0.5) * slice;
-    const jitter = (randomFloat() - 0.5) * slice * 0.7; // สุ่มตำแหน่งในชิ้น ไม่ให้ชี้กลางเป๊ะ
+    const jitter = (randomFloat() - 0.5) * slice * 0.7;
     const base = Math.ceil(rotation / 360) * 360;
     rotation = base + 360 * 6 + (360 - center) + jitter;
   }
@@ -78,73 +69,75 @@
   }
 </script>
 
-<div class="relative mx-auto aspect-square w-full max-w-sm select-none">
+<div class="relative mx-auto aspect-square w-full max-w-xs select-none">
   <!-- เข็มชี้ -->
   <div
-    class="absolute top-0 left-1/2 z-10 -translate-x-1/2 -translate-y-1"
+    class="absolute top-0 left-1/2 z-10 -translate-x-1/2 -translate-y-2"
     aria-hidden="true"
   >
-    <svg width="34" height="40" viewBox="0 0 34 40">
+    <svg width="26" height="30" viewBox="0 0 26 30">
       <path
-        d="M17 40 L2 8 Q17 -4 32 8 Z"
-        fill="#1e293b"
-        stroke="white"
+        d="M13 30 L2 6 Q13 -3 24 6 Z"
+        fill="#ff6b35"
+        stroke="#fafaf9"
         stroke-width="3"
+        stroke-linejoin="round"
       />
     </svg>
   </div>
 
   <div
-    class="h-full w-full rounded-full shadow-xl ring-8 ring-white"
+    class="h-full w-full rounded-full border border-stone-300 bg-white shadow-sm"
     style="transform: rotate({rotation}deg); transition: transform {spinning
-      ? 5
+      ? duration
       : 0}s cubic-bezier(0.12, 0.6, 0.1, 1);"
     ontransitionend={onEnd}
   >
     <svg viewBox="0 0 {SIZE} {SIZE}" class="h-full w-full">
       {#if n === 0}
-        <circle cx={C} cy={C} r={C} fill="#e2e8f0" />
         <text
           x={C}
           y={C}
           text-anchor="middle"
           dominant-baseline="middle"
-          font-size="9"
-          fill="#64748b">เพิ่มตัวเลือกก่อนนะ</text
+          font-size="12"
+          font-weight="600"
+          fill="#44403c">เพิ่มตัวเลือกก่อนนะ</text
         >
       {:else if n === 1}
-        <circle cx={C} cy={C} r={C} fill={COLORS[0]} />
         <text
           x={C}
           y={C}
           text-anchor="middle"
           dominant-baseline="middle"
           font-size="11"
-          font-weight="700"
-          fill="white">{label(items[0])}</text
+          font-weight="600"
+          fill="#1c1917">{label(items[0])}</text
         >
       {:else}
         {#each items as item, i (i + item)}
           <path
             d={slicePath(i)}
-            fill={color(i)}
-            stroke="white"
-            stroke-width="0.8"
+            fill={fill(i)}
+            stroke="#d6d3d1"
+            stroke-width="0.5"
           />
           <text
             transform="rotate({(i + 0.5) * slice - 90} {C} {C})"
-            x={SIZE - 10}
+            x={SIZE - 12}
             y={C}
             text-anchor="end"
             dominant-baseline="middle"
             font-size={fontSize}
-            font-weight="700"
-            fill="white">{label(item)}</text
+            font-weight="600"
+            fill="#292524">{label(item)}</text
           >
         {/each}
       {/if}
-      <circle cx={C} cy={C} r="9" fill="white" />
-      <circle cx={C} cy={C} r="4" fill="#1e293b" />
+      {#if n >= 2}
+        <circle cx={C} cy={C} r="8" fill="#fafaf9" stroke="#d6d3d1" />
+        <circle cx={C} cy={C} r="3" fill="#ff6b35" />
+      {/if}
     </svg>
   </div>
 </div>
