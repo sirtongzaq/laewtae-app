@@ -1,0 +1,6 @@
+@import 'tailwindcss';
+
+@theme {
+	--font-sans: 'Noto Sans Thai', 'Prompt', ui-sans-serif, system-ui, sans-serif;
+	--color-brand: #ff6b35;
+}
