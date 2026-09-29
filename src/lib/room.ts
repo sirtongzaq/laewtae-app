@@ -1,8 +1,11 @@
 export type RoomStatus = "lobby" | "voting" | "done";
+/** vote = โหวตเลือก 1 อย่าง / swipe = ปัดซ้าย-ขวาทีละใบ */
+export type RoomMode = "vote" | "swipe";
 
 export type Room = {
   id: string;
   code: string;
+  mode: RoomMode;
   category: string;
   status: RoomStatus;
   winner: string | null;
@@ -23,6 +26,14 @@ export type Vote = {
   room_id: string;
   voter_id: string;
   option_id: string;
+  voter_name: string | null;
+};
+
+export type Swipe = {
+  room_id: string;
+  voter_id: string;
+  option_id: string;
+  liked: boolean;
   voter_name: string | null;
 };
 

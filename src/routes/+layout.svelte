@@ -14,6 +14,7 @@
   const links = [
     { href: "/", label: "สุ่มเลย", emoji: "🎲" },
     { href: "/vote", label: "โหวตกับเพื่อน", emoji: "🗳️" },
+    { href: "/swipe", label: "ปัดกับเพื่อน", emoji: "👆" },
   ];
 
   const isActive = (href: string) =>

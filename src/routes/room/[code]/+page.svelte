@@ -5,10 +5,18 @@
   import type { RealtimeChannel } from "@supabase/supabase-js";
   import { supabase, ensureUser } from "$lib/supabase";
   import { categories } from "$lib/data/categories";
-  import { randomInt, type Room, type Option, type Vote, type Member } from "$lib/room";
+  import {
+    randomInt,
+    type Room,
+    type Option,
+    type Vote,
+    type Swipe,
+    type Member,
+  } from "$lib/room";
   import { toast } from "$lib/toast.svelte";
   import { feedback } from "$lib/feedback.svelte";
   import Wheel from "$lib/components/Wheel.svelte";
+  import SwipeDeck from "$lib/components/SwipeDeck.svelte";
 
   /** ข้อมูลที่ host broadcast ให้ทุกเครื่องหมุนวงล้อตัดสินให้เหมือนกัน */
   type TiebreakPayload = { items: string[]; index: number; jitter: number };
@@ -28,6 +36,9 @@
   let room = $state<Room | null>(null);
   let options = $state<Option[]>([]);
   let votes = $state<Vote[]>([]);
+  let swipes = $state<Swipe[]>([]);
+  // การปัดที่เพิ่งกด (แสดงผลทันทีโดยไม่รอฐานข้อมูล): option_id → ถูกใจไหม
+  let pendingSwipes = $state<Record<string, boolean>>({});
   let members = $state<Member[]>([]);
 
   let connected = $state(false);
@@ -65,17 +76,42 @@
   const notReady = $derived(guests.filter((m) => !m.ready));
   const canStart = $derived(isHost && options.length >= 2 && notReady.length === 0);
 
+  const isSwipe = $derived(room?.mode === "swipe");
+  const verb = $derived(isSwipe ? "ปัด" : "โหวต");
+
+  // โหมดโหวต: 1 คะแนน = 1 โหวต / โหมดปัด: 1 คะแนน = 1 คนที่ปัดขวา (ถูกใจ)
   const tally = $derived(
     options.map((o) => {
+      if (isSwipe) {
+        const liked = swipes.filter((s) => s.option_id === o.id && s.liked);
+        return { ...o, count: liked.length, voters: liked.map((s) => s.voter_name ?? "?") };
+      }
       const vs = votes.filter((v) => v.option_id === o.id);
       return { ...o, count: vs.length, voters: vs.map((v) => v.voter_name ?? "?") };
     }),
   );
+  const activity = $derived(isSwipe ? swipes.length : votes.length);
   const ranking = $derived([...tally].sort((a, b) => b.count - a.count));
   const maxCount = $derived(Math.max(0, ...tally.map((t) => t.count)));
+  // โหมดปัดแล้วไม่มีใครถูกใจอะไรเลย → ให้ทุกตัวเลือกเสมอกัน แล้วหมุนวงล้อตัดสิน
   const tiedOptions = $derived(
-    maxCount > 0 ? tally.filter((t) => t.count === maxCount) : [],
+    maxCount > 0
+      ? tally.filter((t) => t.count === maxCount)
+      : isSwipe && swipes.length > 0
+        ? tally
+        : [],
   );
+
+  // โหมดปัด: การ์ดที่เรายังไม่ได้ปัด
+  const swipedBy = (id: string) => swipes.filter((s) => s.voter_id === id).length;
+  const mySwiped = $derived(
+    new Set([
+      ...swipes.filter((s) => s.voter_id === me).map((s) => s.option_id),
+      ...Object.keys(pendingSwipes),
+    ]),
+  );
+  const deck = $derived(options.filter((o) => !mySwiped.has(o.id)));
+  const progressOf = (id: string) => Math.min(options.length, swipedBy(id));
   const tiedCount = $derived(tiedOptions.length);
   // ปิดโหวตแล้วแต่ยังไม่มีผู้ชนะ = คะแนนเสมอ รอหมุนวงล้อตัดสิน
   const inTiebreak = $derived(room?.status === "done" && !room.winner);
@@ -94,14 +130,17 @@
   );
   // - ประกาศผล: ทุกคนที่อยู่ในห้องโหวตครบแล้ว
   const autoFinishOk = $derived(
-    connected && room?.status === "voting" && votes.length > 0 && allVoted,
+    connected && room?.status === "voting" && activity > 0 && allVoted,
   );
   const autoTiebreakOk = $derived(
     connected && inTiebreak && !tbSeen && !tbSpinning && wheelItems.length >= 2,
   );
   const myVote = $derived(votes.find((v) => v.voter_id === me)?.option_id ?? null);
+  // จำนวนคนที่ "เสร็จ" แล้ว: โหมดโหวต = โหวตแล้ว / โหมดปัด = ปัดครบทุกใบ
   const votedCount = $derived(
-    members.filter((m) => votes.some((v) => v.voter_id === m.id)).length,
+    isSwipe
+      ? members.filter((m) => options.length > 0 && progressOf(m.id) >= options.length).length
+      : members.filter((m) => votes.some((v) => v.voter_id === m.id)).length,
   );
   const allVoted = $derived(members.length > 0 && votedCount === members.length);
   const suggestions = $derived(
@@ -130,6 +169,12 @@
     votes = (data ?? []) as Vote[];
   }
 
+  async function fetchSwipes() {
+    if (!room) return;
+    const { data } = await supabase.from("swipes").select("*").eq("room_id", room.id);
+    swipes = (data ?? []) as Swipe[];
+  }
+
   onMount(async () => {
     try {
       name = localStorage.getItem(NAME_KEY) ?? "";
@@ -152,7 +197,10 @@
         return;
       }
       room = data as Room;
-      await Promise.all([fetchOptions(), fetchVotes()]);
+      await Promise.all([
+        fetchOptions(),
+        room.mode === "swipe" ? fetchSwipes() : fetchVotes(),
+      ]);
       connect(room);
     } catch (e) {
       console.error(e);
@@ -186,18 +234,38 @@
         { event: "*", schema: "public", table: "options", filter: `room_id=eq.${r.id}` },
         () => fetchOptions(),
       )
-      .on(
-        "postgres_changes",
-        { event: "*", schema: "public", table: "votes", filter: `room_id=eq.${r.id}` },
-        () => fetchVotes(),
-      )
       // DELETE ใช้ filter ไม่ได้ → ฟังทั้งหมดแล้วเช็ก room_id เอง (ต้องมี replica identity full)
       .on("postgres_changes", { event: "DELETE", schema: "public", table: "options" }, (p) => {
         if ((p.old as Partial<Option>).room_id === r.id) fetchOptions();
-      })
-      .on("postgres_changes", { event: "DELETE", schema: "public", table: "votes" }, (p) => {
+      });
+
+    if (r.mode === "swipe") {
+      ch.on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "swipes", filter: `room_id=eq.${r.id}` },
+        (p) => {
+          // INSERT/UPDATE: ใส่ผลลงรายการเลย ไม่ต้อง query ใหม่ทุกครั้งที่ใครปัด
+          const s = p.new as Partial<Swipe>;
+          if (p.eventType === "DELETE" || !s.option_id || !s.voter_id) return;
+          swipes = [
+            ...swipes.filter((x) => !(x.voter_id === s.voter_id && x.option_id === s.option_id)),
+            s as Swipe,
+          ];
+        },
+      ).on("postgres_changes", { event: "DELETE", schema: "public", table: "swipes" }, (p) => {
+        if ((p.old as Partial<Swipe>).room_id === r.id) fetchSwipes();
+      });
+    } else {
+      ch.on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "votes", filter: `room_id=eq.${r.id}` },
+        () => fetchVotes(),
+      ).on("postgres_changes", { event: "DELETE", schema: "public", table: "votes" }, (p) => {
         if ((p.old as Partial<Vote>).room_id === r.id) fetchVotes();
-      })
+      });
+    }
+
+    ch
       // host สั่งหมุนวงล้อตัดสิน → ทุกเครื่องหมุนไปหยุดที่ชิ้นเดียวกัน
       .on("broadcast", { event: "tiebreak" }, ({ payload }) => {
         startTiebreak(payload as TiebreakPayload);
@@ -234,6 +302,7 @@
       ready = false;
       tbItems = null;
       tbSeen = false;
+      pendingSwipes = {};
     }
   });
 
@@ -277,7 +346,7 @@
     const cd = untrack(() =>
       runCountdown(
         5,
-        (n) => `ทุกคนพร้อมแล้ว เริ่มโหวตใน ${n}…`,
+        (n) => `ทุกคนพร้อมแล้ว เริ่ม${verb}ใน ${n}…`,
         (n) => (lobbyCd = n),
         () => {
           finished = true;
@@ -303,7 +372,7 @@
     const cd = untrack(() =>
       runCountdown(
         5,
-        (n) => `ทุกคนโหวตครบแล้ว ประกาศผลใน ${n}…`,
+        (n) => `ทุกคน${verb}ครบแล้ว ประกาศผลใน ${n}…`,
         (n) => (voteCd = n),
         () => {
           finished = true;
@@ -399,8 +468,8 @@
     if (!navigator.share) return copyLink();
     try {
       await navigator.share({
-        title: "แล้วแต่ — โหวตกับเพื่อน",
-        text: `มาโหวตกัน! รหัสห้อง ${code}`,
+        title: `แล้วแต่ — ${verb}กับเพื่อน`,
+        text: `มา${verb}กัน! รหัสห้อง ${code}`,
         url: roomUrl(),
       });
     } catch {
@@ -458,10 +527,27 @@
     if (error) toast.show("โหวตไม่สำเร็จ ลองอีกครั้งนะ");
   }
 
+  // โหมดปัด: บันทึกการปัดหนึ่งใบ (การ์ดถัดไปขึ้นทันที ไม่รอฐานข้อมูล)
+  async function swipeCard(optionId: string, liked: boolean) {
+    if (!room || !me || room.status !== "voting") return;
+    pendingSwipes[optionId] = liked;
+    if (liked) feedback.vote();
+    else feedback.tap();
+    const { error } = await supabase.from("swipes").upsert(
+      { room_id: room.id, voter_id: me, option_id: optionId, liked, voter_name: name },
+      { onConflict: "room_id,voter_id,option_id" },
+    );
+    if (error) {
+      console.error(error);
+      delete pendingSwipes[optionId];
+      toast.show("ปัดไม่สำเร็จ ลองอีกครั้งนะ");
+    }
+  }
+
   async function finish() {
     if (!isHost) return;
-    if (votes.length === 0) {
-      toast.show("ยังไม่มีใครโหวตเลย");
+    if (activity === 0) {
+      toast.show(isSwipe ? "ยังไม่มีใครปัดเลย" : "ยังไม่มีใครโหวตเลย");
       return;
     }
     // เสมอ → ปิดโหวตโดยยังไม่มีผู้ชนะ แล้วให้ host หมุนวงล้อตัดสิน (ทุกคนเห็นพร้อมกัน)
@@ -508,7 +594,10 @@
 
   async function newRound() {
     if (!room || !isHost) return;
-    const { error } = await supabase.from("votes").delete().eq("room_id", room.id);
+    const { error } = await supabase
+      .from(isSwipe ? "swipes" : "votes")
+      .delete()
+      .eq("room_id", room.id);
     if (error) return toast.show("เริ่มรอบใหม่ไม่สำเร็จ");
     await updateRoom({ status: "lobby", winner: null });
   }
@@ -551,7 +640,7 @@
       <div class="flex items-center justify-between">
         <span class="text-sm text-stone-500">
           {category.emoji}
-          {category.name}
+          {category.name} · {isSwipe ? "ปัดกับเพื่อน" : "โหวตกับเพื่อน"}
         </span>
         <span
           class="inline-flex items-center gap-1.5 rounded-full bg-stone-100 px-2.5 py-1 text-xs font-medium text-stone-600"
@@ -594,7 +683,7 @@
               ? 'bg-stone-900 text-white'
               : 'bg-stone-200 text-stone-500'}">{i + 1}</span
           >
-          {s.label}
+          {s.key === "voting" ? verb : s.label}
           {#if i < steps.length - 1}<span class="text-stone-300">—</span>{/if}
         </li>
       {/each}
@@ -623,15 +712,26 @@
                 {m.ready ? "พร้อมแล้ว" : "ยังไม่พร้อม"}
               </span>
             {:else if room.status === "voting"}
-              <span
-                class="rounded-full px-2 py-0.5 text-[11px] font-semibold {votes.some(
-                  (v) => v.voter_id === m.id,
-                )
-                  ? 'bg-emerald-100 text-emerald-700'
-                  : 'bg-stone-100 text-stone-500'}"
-              >
-                {votes.some((v) => v.voter_id === m.id) ? "โหวตแล้ว" : "กำลังเลือก"}
-              </span>
+              {#if isSwipe}
+                {@const done = options.length > 0 && progressOf(m.id) >= options.length}
+                <span
+                  class="rounded-full px-2 py-0.5 text-[11px] font-semibold {done
+                    ? 'bg-emerald-100 text-emerald-700'
+                    : 'bg-stone-100 text-stone-500'}"
+                >
+                  {done ? "ปัดครบแล้ว" : `ปัดแล้ว ${progressOf(m.id)}/${options.length}`}
+                </span>
+              {:else}
+                <span
+                  class="rounded-full px-2 py-0.5 text-[11px] font-semibold {votes.some(
+                    (v) => v.voter_id === m.id,
+                  )
+                    ? 'bg-emerald-100 text-emerald-700'
+                    : 'bg-stone-100 text-stone-500'}"
+                >
+                  {votes.some((v) => v.voter_id === m.id) ? "โหวตแล้ว" : "กำลังเลือก"}
+                </span>
+              {/if}
             {/if}
           </li>
         {:else}
@@ -720,7 +820,7 @@
       <section class="mt-4">
         {#if isHost}
           <button onclick={startVoting} disabled={!canStart} class="{btnPrimary} w-full py-4 text-base">
-            {lobbyCd !== null ? "เริ่มเลยตอนนี้" : "เริ่มโหวต"}
+            {lobbyCd !== null ? "เริ่มเลยตอนนี้" : `เริ่ม${verb}`}
           </button>
           <p class="mt-2 text-center text-xs text-stone-500" role="status">
             {#if options.length < 2}
@@ -750,9 +850,9 @@
             {#if !ready}
               เพิ่มตัวเลือกให้ครบ แล้วกดพร้อม
             {:else if lobbyCd !== null}
-              ทุกคนพร้อมแล้ว เริ่มโหวตใน {lobbyCd}…
+              ทุกคนพร้อมแล้ว เริ่ม{verb}ใน {lobbyCd}…
             {:else}
-              รอเจ้าของห้องเริ่มโหวต…
+              รอเจ้าของห้องเริ่ม{verb}…
             {/if}
           </p>
         {/if}
@@ -760,6 +860,23 @@
 
       <!-- ================= VOTING ================= -->
     {:else if room.status === "voting"}
+      {#if isSwipe}
+        <!-- โหมดปัด: การ์ดทีละใบ -->
+        <section class="{card} mt-4">
+          <div class="flex items-center justify-between">
+            <h2 class="text-sm font-bold">ปัดขวา = เอา · ปัดซ้าย = ไม่เอา</h2>
+            <span class="text-xs text-stone-500" role="status">
+              ปัดแล้ว {options.length - deck.length}/{options.length}
+            </span>
+          </div>
+          <div class="mt-5">
+            <SwipeDeck cards={deck} emoji={category.emoji} onswipe={swipeCard} />
+          </div>
+          <p class="mt-4 text-center text-xs text-stone-400" role="status">
+            ปัดครบแล้ว {votedCount}/{members.length} คน
+          </p>
+        </section>
+      {:else}
       <section class="{card} mt-4">
         <div class="flex items-center justify-between">
           <h2 class="text-sm font-bold">เลือก 1 อย่าง</h2>
@@ -796,12 +913,13 @@
           {/each}
         </ul>
       </section>
+      {/if}
 
       <section class="mt-4">
         {#if isHost}
           <button
             onclick={finish}
-            disabled={votes.length === 0}
+            disabled={activity === 0}
             class="w-full rounded-full py-4 text-base font-semibold transition active:scale-[0.98] disabled:opacity-40 {allVoted
               ? 'bg-brand text-white hover:opacity-90'
               : 'bg-stone-900 text-white hover:bg-stone-700'}"
@@ -809,8 +927,8 @@
             {voteCd !== null
               ? "ประกาศผลเลยตอนนี้"
               : allVoted
-                ? "ทุกคนโหวตครบแล้ว — ประกาศผล"
-                : "ปิดโหวตและประกาศผล"}
+                ? `ทุกคน${verb}ครบแล้ว — ประกาศผล`
+                : `ปิด${verb}และประกาศผล`}
           </button>
           {#if voteCd !== null}
             <p class="mt-2 text-center text-xs text-stone-500" role="status">
@@ -820,7 +938,9 @@
         {:else}
           <p class="text-center text-sm text-stone-500" role="status">
             {#if voteCd !== null}
-              ทุกคนโหวตครบแล้ว ประกาศผลใน {voteCd}…
+              ทุกคน{verb}ครบแล้ว ประกาศผลใน {voteCd}…
+            {:else if isSwipe}
+              {deck.length === 0 ? "ปัดครบแล้ว รอเพื่อน ๆ…" : "ปัดขวาเพื่อเอา ปัดซ้ายเพื่อไม่เอา"}
             {:else if myVote}
               โหวตแล้ว เปลี่ยนใจได้จนกว่าเจ้าของห้องจะปิดโหวต
             {:else}
