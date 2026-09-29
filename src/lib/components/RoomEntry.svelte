@@ -4,7 +4,7 @@
   import { Label, ToggleGroup } from "bits-ui";
   import { supabase, ensureUser } from "$lib/supabase";
   import { categories } from "$lib/data/categories";
-  import { makeCode, normalizeCode, type RoomMode } from "$lib/room";
+  import { limitMessage, makeCode, normalizeCode, type RoomMode } from "$lib/room";
   import { toast } from "$lib/toast.svelte";
 
   type Props = {
@@ -39,7 +39,7 @@
       throw new Error("สร้างรหัสห้องไม่สำเร็จ");
     } catch (e) {
       console.error(e);
-      toast.show("สร้างห้องไม่สำเร็จ ลองอีกครั้งนะ");
+      toast.show(limitMessage((e as { message?: string })?.message) ?? "สร้างห้องไม่สำเร็จ ลองอีกครั้งนะ");
     } finally {
       creating = false;
     }

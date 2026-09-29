@@ -7,6 +7,9 @@
   import { categories } from "$lib/data/categories";
   import {
     randomInt,
+    limitMessage,
+    MAX_OPTIONS,
+    MAX_MEMBERS,
     type Room,
     type Option,
     type Vote,
@@ -42,6 +45,9 @@
   let members = $state<Member[]>([]);
 
   let connected = $state(false);
+  let roomFull = $state(false); // ห้องเต็มแล้ว (คนที่เข้าทีหลังเกิน MAX_MEMBERS)
+  let hadConnected = false;
+  let lastSync = 0;
   let ready = $state(false);
   let newItem = $state("");
 
@@ -186,17 +192,22 @@
       const user = await ensureUser();
       me = user.id;
 
-      const { data, error } = await supabase
-        .from("rooms")
-        .select("*")
-        .eq("code", code)
-        .maybeSingle();
-      if (error) throw error;
-      if (!data) {
+      // เข้าห้องด้วยรหัสผ่านฟังก์ชัน join_room เท่านั้น (ค้นตาราง rooms ตรง ๆ ไม่ได้แล้ว)
+      // ฟังก์ชันจะเช็กรหัส / วันหมดอายุ / เพดาน 10 คน แล้วเพิ่มเราเป็นสมาชิกห้อง
+      const { data, error } = await supabase.rpc("join_room", { p_code: code });
+      if (error) {
+        if (error.message.includes("LIMIT_MEMBERS")) {
+          roomFull = true;
+          return;
+        }
+        throw error;
+      }
+      const found = (data as Room[] | null)?.[0];
+      if (!found) {
         notFound = true;
         return;
       }
-      room = data as Room;
+      room = found;
       await Promise.all([
         fetchOptions(),
         room.mode === "swipe" ? fetchSwipes() : fetchVotes(),
@@ -234,9 +245,11 @@
         { event: "*", schema: "public", table: "options", filter: `room_id=eq.${r.id}` },
         () => fetchOptions(),
       )
-      // DELETE ใช้ filter ไม่ได้ → ฟังทั้งหมดแล้วเช็ก room_id เอง (ต้องมี replica identity full)
+      // DELETE ใช้ filter ไม่ได้ → ฟังทั้งหมดแล้วเช็กเอง
+      // (replica identity เป็น default: event มีแค่ primary key — options เช็กจาก id, votes/swipes เช็กจาก room_id)
       .on("postgres_changes", { event: "DELETE", schema: "public", table: "options" }, (p) => {
-        if ((p.old as Partial<Option>).room_id === r.id) fetchOptions();
+        const id = (p.old as Partial<Option>).id;
+        if (id && options.some((o) => o.id === id)) fetchOptions();
       });
 
     if (r.mode === "swipe") {
@@ -276,14 +289,69 @@
           const m = metas[metas.length - 1];
           return { id, name: m.name, ready: m.ready, at: m.at };
         });
+
+        // ห้องเต็ม: เรียงตามลำดับเข้าห้อง (เจ้าของห้องมาก่อนเสมอ) ใครเกินเพดานถือว่าเข้าไม่ได้
+        if (!roomFull && members.length > MAX_MEMBERS) {
+          const order = [...members].sort((a, b) =>
+            a.id === r.host_id ? -1 : b.id === r.host_id ? 1 : a.at - b.at,
+          );
+          if (order.findIndex((m) => m.id === me) >= MAX_MEMBERS) {
+            roomFull = true;
+            void ch.untrack();
+          }
+        }
       })
       .subscribe((status) => {
         connected = status === "SUBSCRIBED";
+        if (connected) {
+          // หลุดแล้วกลับมาเชื่อมต่อได้ → ดึงข้อมูลที่พลาดไประหว่างนั้น
+          if (hadConnected) void resync();
+          hadConnected = true;
+        }
       });
   }
 
+  // ---------- ซิงก์ข้อมูลใหม่หลังกลับมาออนไลน์ ----------
+  // มือถือ (โดยเฉพาะ Safari) พักแท็บแล้ว WebSocket หลุด event ที่เกิดระหว่างนั้นจะหายไป
+  // จึงดึงสถานะล่าสุดจากฐานข้อมูลใหม่ทุกครั้งที่กลับมาที่แท็บ / กลับมามีเน็ต / ต่อ Realtime ได้อีกครั้ง
+  async function resync() {
+    if (!room || destroyed) return;
+    const now = Date.now();
+    if (now - lastSync < 1500) return; // กันเรียกซ้ำถี่ ๆ
+    lastSync = now;
+
+    try {
+      const { data, error } = await supabase
+        .from("rooms")
+        .select("*")
+        .eq("id", room.id)
+        .maybeSingle();
+      if (error) return; // เน็ตยังไม่พร้อม ไว้รอบหน้า
+      if (!data) {
+        notFound = true; // หายไป = หมดอายุ/ถูกลบแล้ว
+        return;
+      }
+      room = data as Room;
+      await Promise.all([fetchOptions(), room.mode === "swipe" ? fetchSwipes() : fetchVotes()]);
+      await announce(); // ส่งสถานะตัวเอง (ชื่อ/พร้อม) ให้เพื่อนเห็นอีกครั้ง
+    } catch {
+      /* ออฟไลน์อยู่ — รอรอบหน้า */
+    }
+  }
+
+  function onVisible() {
+    if (document.hidden) return;
+    try {
+      // ถ้า socket หลุดจริง ๆ ให้ต่อใหม่ (ปกติ supabase-js ต่อเองอยู่แล้ว นี่คือตัวช่วยสำรอง)
+      if (!supabase.realtime.isConnected()) supabase.realtime.connect();
+    } catch {
+      /* ไม่เป็นไร */
+    }
+    void resync();
+  }
+
   async function announce() {
-    if (!channel || !connected || !name) return;
+    if (!channel || !connected || !name || roomFull) return;
     await channel.track({ name, ready: isHost || ready, at: joinedAt });
   }
 
@@ -480,11 +548,18 @@
   async function addOption(title: string) {
     const t = title.trim();
     if (!t || !room) return;
+    if (options.length >= MAX_OPTIONS) {
+      toast.show(limitMessage("LIMIT_OPTIONS")!);
+      return;
+    }
     const { error } = await supabase
       .from("options")
       .insert({ room_id: room.id, title: t.slice(0, 40) });
     if (error) {
-      toast.show(error.code === "23505" ? "มีตัวเลือกนี้อยู่แล้ว" : "เพิ่มไม่สำเร็จ");
+      toast.show(
+        limitMessage(error.message) ??
+          (error.code === "23505" ? "มีตัวเลือกนี้อยู่แล้ว" : "เพิ่มไม่สำเร็จ"),
+      );
       return;
     }
     newItem = "";
@@ -492,11 +567,24 @@
 
   async function addAllSuggestions() {
     if (!room || suggestions.length === 0) return;
+    const space = MAX_OPTIONS - options.length;
+    if (space <= 0) {
+      toast.show(limitMessage("LIMIT_OPTIONS")!);
+      return;
+    }
+    // เพิ่มได้ไม่เกินจำนวนที่เหลือ
+    const batch = suggestions.slice(0, space);
     const { error } = await supabase.from("options").upsert(
-      suggestions.map((title) => ({ room_id: room!.id, title })),
+      batch.map((title) => ({ room_id: room!.id, title })),
       { onConflict: "room_id,title", ignoreDuplicates: true },
     );
-    if (error) toast.show("เพิ่มไม่สำเร็จ");
+    if (error) {
+      toast.show(limitMessage(error.message) ?? "เพิ่มไม่สำเร็จ");
+      return;
+    }
+    if (batch.length < suggestions.length) {
+      toast.show(`เพิ่มให้ ${batch.length} อย่าง (ตัวเลือกเต็ม ${MAX_OPTIONS} ตัวแล้ว)`);
+    }
   }
 
   async function removeOption(id: string) {
@@ -524,7 +612,7 @@
       { room_id: room.id, voter_id: me, option_id: optionId, voter_name: name },
       { onConflict: "room_id,voter_id" },
     );
-    if (error) toast.show("โหวตไม่สำเร็จ ลองอีกครั้งนะ");
+    if (error) toast.show(limitMessage(error.message) ?? "โหวตไม่สำเร็จ ลองอีกครั้งนะ");
   }
 
   // โหมดปัด: บันทึกการปัดหนึ่งใบ (การ์ดถัดไปขึ้นทันที ไม่รอฐานข้อมูล)
@@ -540,7 +628,7 @@
     if (error) {
       console.error(error);
       delete pendingSwipes[optionId];
-      toast.show("ปัดไม่สำเร็จ ลองอีกครั้งนะ");
+      toast.show(limitMessage(error.message) ?? "ปัดไม่สำเร็จ ลองอีกครั้งนะ");
     }
   }
 
@@ -620,6 +708,10 @@
   <title>ห้อง {code} — แล้วแต่</title>
 </svelte:head>
 
+<!-- กลับมามีเน็ต / กลับมาที่แท็บ → ดึงข้อมูลล่าสุด -->
+<svelte:window ononline={onVisible} />
+<svelte:document onvisibilitychange={onVisible} />
+
 <main class="mx-auto max-w-md px-5 pt-6 pb-16">
   {#if loading}
     <p class="py-24 text-center text-stone-500">กำลังเข้าห้อง…</p>
@@ -628,13 +720,28 @@
       <p class="text-5xl" aria-hidden="true">🔍</p>
       <h1 class="mt-4 text-xl font-bold">ไม่พบห้อง {code}</h1>
       <p class="mt-1 text-sm text-stone-500">
-        เช็กรหัสอีกครั้ง หรือห้องอาจหมดอายุแล้ว (ห้องอยู่ได้ 24 ชั่วโมง)
+        เช็กรหัสอีกครั้ง หรือห้องอาจหมดอายุแล้ว (ห้องที่ไม่มีการใช้งานนานราว 6 ชั่วโมงจะถูกปิด)
       </p>
       <a href="/vote" class="{btnPrimary} mt-6">กลับไปหน้าโหวต</a>
     </div>
   {:else if fatal}
     <p class="py-24 text-center text-stone-600">{fatal}</p>
+  {:else if roomFull}
+    <div class="py-20 text-center">
+      <p class="text-5xl" aria-hidden="true">🚪</p>
+      <h1 class="mt-4 text-xl font-bold">ห้อง {code} เต็มแล้ว</h1>
+      <p class="mt-1 text-sm text-stone-500">ห้องหนึ่งรองรับได้สูงสุด {MAX_MEMBERS} คน</p>
+      <a href="/vote" class="{btnPrimary} mt-6">สร้างห้องใหม่</a>
+    </div>
   {:else if room}
+    {#if !connected}
+      <div
+        class="mb-4 rounded-xl border border-stone-300 bg-stone-100 px-3 py-2 text-center text-xs text-stone-600"
+        role="status"
+      >
+        ⚠️ การเชื่อมต่อหลุด กำลังเชื่อมต่อใหม่… ข้อมูลอาจยังไม่เป็นปัจจุบัน
+      </div>
+    {/if}
     <!-- ===== ส่วนหัวห้อง: รหัส + แชร์ + สถานะการเชื่อมต่อ ===== -->
     <section class={card}>
       <div class="flex items-center justify-between">
@@ -691,7 +798,7 @@
 
     <!-- ===== คนในห้อง ===== -->
     <section class="{card} mt-4">
-      <h2 class="text-sm font-bold">ในห้อง ({members.length})</h2>
+      <h2 class="text-sm font-bold">ในห้อง ({members.length}/{MAX_MEMBERS})</h2>
       <ul class="mt-3 space-y-2">
         {#each sortedMembers as m (m.id)}
           <li class="flex items-center gap-2.5 text-sm">
@@ -747,7 +854,7 @@
     {#if room.status === "lobby"}
       <section class="{card} mt-4">
         <div class="flex items-center justify-between">
-          <h2 class="text-sm font-bold">ตัวเลือก ({options.length})</h2>
+          <h2 class="text-sm font-bold">ตัวเลือก ({options.length}/{MAX_OPTIONS})</h2>
           {#if suggestions.length > 0}
             <button
               onclick={addAllSuggestions}
@@ -772,8 +879,13 @@
             aria-label="เพิ่มตัวเลือก"
             class="min-w-0 flex-1 rounded-full border border-stone-200 bg-stone-50 px-4 py-2.5 text-sm outline-none focus:border-stone-900 focus:bg-white"
           />
-          <button type="submit" class={btnPrimary}>เพิ่ม</button>
+          <button type="submit" disabled={options.length >= MAX_OPTIONS} class={btnPrimary}>
+            เพิ่ม
+          </button>
         </form>
+        {#if options.length >= MAX_OPTIONS}
+          <p class="mt-2 text-xs text-stone-500">ตัวเลือกเต็มแล้ว ลบบางอันออกถ้าอยากเพิ่มใหม่</p>
+        {/if}
 
         <ul class="mt-4 flex flex-wrap gap-2">
           {#each options as o (o.id)}

@@ -45,6 +45,20 @@ export type Member = {
   at: number;
 };
 
+// ---------- เพดานการใช้งาน (ต้องตรงกับ supabase/limits.sql) ----------
+export const MAX_OPTIONS = 30;
+export const MAX_MEMBERS = 10;
+
+/** แปลง error จากฐานข้อมูล (LIMIT_*) เป็นข้อความไทย — คืน null ถ้าไม่ใช่ error เรื่องเพดาน */
+export function limitMessage(message?: string): string | null {
+  if (!message) return null;
+  if (message.includes("LIMIT_OPTIONS")) return `ตัวเลือกเต็มแล้ว (สูงสุด ${MAX_OPTIONS} ตัว)`;
+  if (message.includes("LIMIT_MEMBERS")) return `ห้องเต็มแล้ว (สูงสุด ${MAX_MEMBERS} คน)`;
+  if (message.includes("LIMIT_ROOMS")) return "คุณเปิดห้องไว้เยอะเกินไป ใช้ห้องเดิมหรือรอให้ห้องเก่าหมดอายุก่อนนะ";
+  if (message.includes("LIMIT_RATE")) return "สร้างห้องถี่เกินไป รอสักครู่แล้วลองใหม่นะ";
+  return null;
+}
+
 // ตัดตัวอักษรที่สับสนง่าย (0/O, 1/I/L)
 const ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789";
 
