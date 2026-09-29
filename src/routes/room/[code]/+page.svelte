@@ -136,13 +136,6 @@
       notReady.length === 0 &&
       options.length >= 2,
   );
-  // - ประกาศผล: ทุกคนที่อยู่ในห้องโหวตครบแล้ว
-  const autoFinishOk = $derived(
-    connected && room?.status === "voting" && activity > 0 && allVoted,
-  );
-  const autoTiebreakOk = $derived(
-    connected && inTiebreak && !tbSeen && !tbSpinning && wheelItems.length >= 2,
-  );
   const myVote = $derived(votes.find((v) => v.voter_id === me)?.option_id ?? null);
   // จำนวนคนที่ "เสร็จ" แล้ว: โหมดโหวต = โหวตแล้ว / โหมดปัด = ปัดครบทุกใบ
   const votedCount = $derived(
@@ -151,6 +144,13 @@
       : members.filter((m) => votes.some((v) => v.voter_id === m.id)).length,
   );
   const allVoted = $derived(members.length > 0 && votedCount === members.length);
+  // - ประกาศผล: ทุกคนที่อยู่ในห้องโหวตครบแล้ว
+  const autoFinishOk = $derived(
+    connected && room?.status === "voting" && activity > 0 && allVoted,
+  );
+  const autoTiebreakOk = $derived(
+    connected && inTiebreak && !tbSeen && !tbSpinning && wheelItems.length >= 2,
+  );
   // คำแนะนำ: ตัดของที่ถูกเพิ่มแล้ว และเอาของที่เพิ่งได้ภายใน N วันไปไว้ท้ายสุด
   const recentSet = $derived(recents.recentTitles());
   const suggestions = $derived.by(() => {
