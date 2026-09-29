@@ -1,0 +1,668 @@
+<script lang="ts">
+  import { onMount, onDestroy } from "svelte";
+  import { page } from "$app/state";
+  import { Dialog } from "bits-ui";
+  import type { RealtimeChannel } from "@supabase/supabase-js";
+  import { supabase, ensureUser } from "$lib/supabase";
+  import { categories } from "$lib/data/categories";
+  import { randomInt, type Room, type Option, type Vote, type Member } from "$lib/room";
+  import { toast } from "$lib/toast.svelte";
+
+  const NAME_KEY = "laewtae:name";
+  const code = (page.params.code ?? "").toUpperCase();
+
+  // ---------- state ----------
+  let loading = $state(true);
+  let notFound = $state(false);
+  let fatal = $state<string | null>(null);
+
+  let me = $state<string | null>(null);
+  let name = $state("");
+  let nameInput = $state("");
+
+  let room = $state<Room | null>(null);
+  let options = $state<Option[]>([]);
+  let votes = $state<Vote[]>([]);
+  let members = $state<Member[]>([]);
+
+  let connected = $state(false);
+  let ready = $state(false);
+  let newItem = $state("");
+
+  let channel: RealtimeChannel | null = null;
+  const joinedAt = Date.now();
+
+  // ---------- derived ----------
+  const isHost = $derived(!!room && me === room.host_id);
+  const category = $derived(
+    categories.find((c) => c.id === room?.category) ?? categories[0],
+  );
+
+  const sortedMembers = $derived(
+    [...members].sort((a, b) =>
+      a.id === room?.host_id ? -1 : b.id === room?.host_id ? 1 : a.at - b.at,
+    ),
+  );
+  // เจ้าของห้องนับเป็น "พร้อม" โดยอัตโนมัติ — รอเฉพาะเพื่อนที่เหลือ
+  const guests = $derived(members.filter((m) => m.id !== room?.host_id));
+  const notReady = $derived(guests.filter((m) => !m.ready));
+  const canStart = $derived(isHost && options.length >= 2 && notReady.length === 0);
+
+  const tally = $derived(
+    options.map((o) => {
+      const vs = votes.filter((v) => v.option_id === o.id);
+      return { ...o, count: vs.length, voters: vs.map((v) => v.voter_name ?? "?") };
+    }),
+  );
+  const ranking = $derived([...tally].sort((a, b) => b.count - a.count));
+  const maxCount = $derived(Math.max(0, ...tally.map((t) => t.count)));
+  const tiedCount = $derived(
+    maxCount > 0 ? tally.filter((t) => t.count === maxCount).length : 0,
+  );
+  const myVote = $derived(votes.find((v) => v.voter_id === me)?.option_id ?? null);
+  const votedCount = $derived(
+    members.filter((m) => votes.some((v) => v.voter_id === m.id)).length,
+  );
+  const allVoted = $derived(members.length > 0 && votedCount === members.length);
+  const suggestions = $derived(
+    category.items.filter((t) => !options.some((o) => o.title === t)),
+  );
+  const mapsUrl = $derived(
+    room?.winner
+      ? `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(room.winner)}`
+      : "",
+  );
+
+  // ---------- data ----------
+  async function fetchOptions() {
+    if (!room) return;
+    const { data } = await supabase
+      .from("options")
+      .select("*")
+      .eq("room_id", room.id)
+      .order("created_at");
+    options = (data ?? []) as Option[];
+  }
+
+  async function fetchVotes() {
+    if (!room) return;
+    const { data } = await supabase.from("votes").select("*").eq("room_id", room.id);
+    votes = (data ?? []) as Vote[];
+  }
+
+  onMount(async () => {
+    try {
+      name = localStorage.getItem(NAME_KEY) ?? "";
+    } catch {
+      /* ไม่มี localStorage ก็ถามชื่อใหม่ */
+    }
+
+    try {
+      const user = await ensureUser();
+      me = user.id;
+
+      const { data, error } = await supabase
+        .from("rooms")
+        .select("*")
+        .eq("code", code)
+        .maybeSingle();
+      if (error) throw error;
+      if (!data) {
+        notFound = true;
+        return;
+      }
+      room = data as Room;
+      await Promise.all([fetchOptions(), fetchVotes()]);
+      connect(room);
+    } catch (e) {
+      console.error(e);
+      fatal = "เชื่อมต่อไม่สำเร็จ ลองรีเฟรชหน้านี้อีกครั้งนะ";
+    } finally {
+      loading = false;
+    }
+  });
+
+  onDestroy(() => {
+    if (channel) supabase.removeChannel(channel);
+  });
+
+  // ---------- realtime ----------
+  function connect(r: Room) {
+    const ch = supabase.channel(`room:${r.id}`, {
+      config: { presence: { key: me! } },
+    });
+    channel = ch;
+
+    ch.on(
+      "postgres_changes",
+      { event: "UPDATE", schema: "public", table: "rooms", filter: `id=eq.${r.id}` },
+      (p) => {
+        room = p.new as Room;
+      },
+    )
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "options", filter: `room_id=eq.${r.id}` },
+        () => fetchOptions(),
+      )
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "votes", filter: `room_id=eq.${r.id}` },
+        () => fetchVotes(),
+      )
+      // DELETE ใช้ filter ไม่ได้ → ฟังทั้งหมดแล้วเช็ก room_id เอง (ต้องมี replica identity full)
+      .on("postgres_changes", { event: "DELETE", schema: "public", table: "options" }, (p) => {
+        if ((p.old as Partial<Option>).room_id === r.id) fetchOptions();
+      })
+      .on("postgres_changes", { event: "DELETE", schema: "public", table: "votes" }, (p) => {
+        if ((p.old as Partial<Vote>).room_id === r.id) fetchVotes();
+      })
+      .on("presence", { event: "sync" }, () => {
+        const state = ch.presenceState<{ name: string; ready: boolean; at: number }>();
+        members = Object.entries(state).map(([id, metas]) => {
+          const m = metas[metas.length - 1];
+          return { id, name: m.name, ready: m.ready, at: m.at };
+        });
+      })
+      .subscribe((status) => {
+        connected = status === "SUBSCRIBED";
+      });
+  }
+
+  async function announce() {
+    if (!channel || !connected || !name) return;
+    await channel.track({ name, ready: isHost || ready, at: joinedAt });
+  }
+
+  // ประกาศสถานะตัวเองใหม่ทุกครั้งที่ชื่อ / ready / การเชื่อมต่อเปลี่ยน
+  $effect(() => {
+    name;
+    ready;
+    connected;
+    isHost;
+    announce();
+  });
+
+  // เริ่มรอบใหม่ → ทุกคนต้องกดพร้อมใหม่
+  $effect(() => {
+    if (room?.status === "lobby") ready = false;
+  });
+
+  // ---------- actions ----------
+  function saveName() {
+    const n = nameInput.trim();
+    if (!n) return;
+    name = n.slice(0, 20);
+    try {
+      localStorage.setItem(NAME_KEY, name);
+    } catch {
+      /* ไม่เป็นไร */
+    }
+  }
+
+  const roomUrl = () => `${location.origin}/room/${code}`;
+
+  async function copyLink() {
+    try {
+      await navigator.clipboard.writeText(roomUrl());
+      toast.show("คัดลอกลิงก์แล้ว ส่งให้เพื่อนได้เลย");
+    } catch {
+      toast.show("คัดลอกไม่ได้ ลองอีกครั้งนะ");
+    }
+  }
+
+  async function shareLink() {
+    if (!navigator.share) return copyLink();
+    try {
+      await navigator.share({
+        title: "แล้วแต่ — โหวตกับเพื่อน",
+        text: `มาโหวตกัน! รหัสห้อง ${code}`,
+        url: roomUrl(),
+      });
+    } catch {
+      /* ผู้ใช้ยกเลิก */
+    }
+  }
+
+  async function addOption(title: string) {
+    const t = title.trim();
+    if (!t || !room) return;
+    const { error } = await supabase
+      .from("options")
+      .insert({ room_id: room.id, title: t.slice(0, 40) });
+    if (error) {
+      toast.show(error.code === "23505" ? "มีตัวเลือกนี้อยู่แล้ว" : "เพิ่มไม่สำเร็จ");
+      return;
+    }
+    newItem = "";
+  }
+
+  async function addAllSuggestions() {
+    if (!room || suggestions.length === 0) return;
+    const { error } = await supabase.from("options").upsert(
+      suggestions.map((title) => ({ room_id: room!.id, title })),
+      { onConflict: "room_id,title", ignoreDuplicates: true },
+    );
+    if (error) toast.show("เพิ่มไม่สำเร็จ");
+  }
+
+  async function removeOption(id: string) {
+    const { error } = await supabase.from("options").delete().eq("id", id);
+    if (error) toast.show("ลบไม่สำเร็จ");
+  }
+
+  async function updateRoom(patch: Partial<Room>) {
+    if (!room) return false;
+    const { error } = await supabase.from("rooms").update(patch).eq("id", room.id);
+    if (error) {
+      console.error(error);
+      toast.show("ทำรายการไม่สำเร็จ ลองอีกครั้งนะ");
+      return false;
+    }
+    return true;
+  }
+
+  const startVoting = () => canStart && updateRoom({ status: "voting" });
+
+  async function castVote(optionId: string) {
+    if (!room || !me || room.status !== "voting") return;
+    const { error } = await supabase.from("votes").upsert(
+      { room_id: room.id, voter_id: me, option_id: optionId, voter_name: name },
+      { onConflict: "room_id,voter_id" },
+    );
+    if (error) toast.show("โหวตไม่สำเร็จ ลองอีกครั้งนะ");
+  }
+
+  async function finish() {
+    if (!isHost) return;
+    if (votes.length === 0) {
+      toast.show("ยังไม่มีใครโหวตเลย");
+      return;
+    }
+    const top = tally.filter((t) => t.count === maxCount);
+    const pick = top[randomInt(top.length)]; // เสมอ → สุ่มตัดสิน
+    await updateRoom({ status: "done", winner: pick.title });
+  }
+
+  async function newRound() {
+    if (!room || !isHost) return;
+    const { error } = await supabase.from("votes").delete().eq("room_id", room.id);
+    if (error) return toast.show("เริ่มรอบใหม่ไม่สำเร็จ");
+    await updateRoom({ status: "lobby", winner: null });
+  }
+
+  // ---------- shared classes ----------
+  const btnPrimary =
+    "inline-flex items-center justify-center rounded-full bg-stone-900 px-5 py-3 text-sm font-semibold text-white transition hover:bg-stone-700 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-40";
+  const btnGhost =
+    "inline-flex items-center justify-center rounded-full border border-stone-300 bg-white px-5 py-3 text-sm font-semibold text-stone-800 transition hover:bg-stone-100 active:scale-[0.98] disabled:opacity-50";
+  const card = "rounded-2xl border border-stone-200 bg-white p-5";
+
+  const steps = [
+    { key: "lobby", label: "เตรียมตัว" },
+    { key: "voting", label: "โหวต" },
+    { key: "done", label: "ผลลัพธ์" },
+  ] as const;
+</script>
+
+<svelte:head>
+  <title>ห้อง {code} — แล้วแต่</title>
+</svelte:head>
+
+<main class="mx-auto max-w-md px-5 pt-6 pb-16">
+  {#if loading}
+    <p class="py-24 text-center text-stone-500">กำลังเข้าห้อง…</p>
+  {:else if notFound}
+    <div class="py-20 text-center">
+      <p class="text-5xl" aria-hidden="true">🔍</p>
+      <h1 class="mt-4 text-xl font-bold">ไม่พบห้อง {code}</h1>
+      <p class="mt-1 text-sm text-stone-500">เช็กรหัสอีกครั้ง หรือสร้างห้องใหม่</p>
+      <a href="/vote" class="{btnPrimary} mt-6">กลับไปหน้าโหวต</a>
+    </div>
+  {:else if fatal}
+    <p class="py-24 text-center text-stone-600">{fatal}</p>
+  {:else if room}
+    <!-- ===== ส่วนหัวห้อง: รหัส + แชร์ + สถานะการเชื่อมต่อ ===== -->
+    <section class={card}>
+      <div class="flex items-center justify-between">
+        <span class="text-sm text-stone-500">
+          {category.emoji}
+          {category.name}
+        </span>
+        <span
+          class="inline-flex items-center gap-1.5 rounded-full bg-stone-100 px-2.5 py-1 text-xs font-medium text-stone-600"
+          role="status"
+        >
+          <span
+            class="size-2 rounded-full {connected ? 'bg-emerald-500' : 'animate-pulse bg-amber-400'}"
+          ></span>
+          {connected ? "เชื่อมต่อแล้ว" : "กำลังเชื่อมต่อ…"}
+        </span>
+      </div>
+
+      <p class="mt-3 text-xs text-stone-400">รหัสห้อง</p>
+      <p class="font-mono text-4xl font-extrabold tracking-[0.3em]">{code}</p>
+
+      <div class="mt-4 flex gap-2">
+        <button onclick={copyLink} class="{btnPrimary} flex-1">คัดลอกลิงก์</button>
+        <button onclick={shareLink} class={btnGhost}>แชร์</button>
+      </div>
+    </section>
+
+    <!-- ===== ขั้นตอน ===== -->
+    <ol class="mt-4 flex items-center justify-center gap-2 text-xs" aria-label="ขั้นตอน">
+      {#each steps as s, i (s.key)}
+        {@const active = room.status === s.key}
+        <li
+          class="flex items-center gap-2 {active ? 'font-bold text-stone-900' : 'text-stone-400'}"
+          aria-current={active ? "step" : undefined}
+        >
+          <span
+            class="flex size-5 items-center justify-center rounded-full text-[11px] {active
+              ? 'bg-stone-900 text-white'
+              : 'bg-stone-200 text-stone-500'}">{i + 1}</span
+          >
+          {s.label}
+          {#if i < steps.length - 1}<span class="text-stone-300">—</span>{/if}
+        </li>
+      {/each}
+    </ol>
+
+    <!-- ===== คนในห้อง ===== -->
+    <section class="{card} mt-4">
+      <h2 class="text-sm font-bold">ในห้อง ({members.length})</h2>
+      <ul class="mt-3 space-y-2">
+        {#each sortedMembers as m (m.id)}
+          <li class="flex items-center gap-2.5 text-sm">
+            <span class="size-2.5 shrink-0 rounded-full bg-emerald-500" aria-hidden="true"></span>
+            <span class="min-w-0 flex-1 truncate">
+              {m.name}{m.id === me ? " (คุณ)" : ""}
+            </span>
+            {#if m.id === room.host_id}
+              <span class="rounded-full bg-stone-900 px-2 py-0.5 text-[11px] font-semibold text-white">
+                เจ้าของห้อง
+              </span>
+            {:else if room.status === "lobby"}
+              <span
+                class="rounded-full px-2 py-0.5 text-[11px] font-semibold {m.ready
+                  ? 'bg-emerald-100 text-emerald-700'
+                  : 'bg-stone-100 text-stone-500'}"
+              >
+                {m.ready ? "พร้อมแล้ว" : "ยังไม่พร้อม"}
+              </span>
+            {:else if room.status === "voting"}
+              <span
+                class="rounded-full px-2 py-0.5 text-[11px] font-semibold {votes.some(
+                  (v) => v.voter_id === m.id,
+                )
+                  ? 'bg-emerald-100 text-emerald-700'
+                  : 'bg-stone-100 text-stone-500'}"
+              >
+                {votes.some((v) => v.voter_id === m.id) ? "โหวตแล้ว" : "กำลังเลือก"}
+              </span>
+            {/if}
+          </li>
+        {:else}
+          <li class="text-sm text-stone-400">กำลังเชื่อมต่อ…</li>
+        {/each}
+      </ul>
+      {#if members.length <= 1 && room.status === "lobby"}
+        <p class="mt-3 text-xs text-stone-400">ส่งลิงก์หรือรหัสให้เพื่อนเพื่อเข้าห้อง</p>
+      {/if}
+    </section>
+
+    <!-- ================= LOBBY ================= -->
+    {#if room.status === "lobby"}
+      <section class="{card} mt-4">
+        <div class="flex items-center justify-between">
+          <h2 class="text-sm font-bold">ตัวเลือก ({options.length})</h2>
+          {#if suggestions.length > 0}
+            <button
+              onclick={addAllSuggestions}
+              class="text-xs text-stone-500 underline underline-offset-4 hover:text-stone-900"
+            >
+              เพิ่มทั้งหมดจากหมวด
+            </button>
+          {/if}
+        </div>
+
+        <form
+          class="mt-3 flex gap-2"
+          onsubmit={(e) => {
+            e.preventDefault();
+            addOption(newItem);
+          }}
+        >
+          <input
+            bind:value={newItem}
+            maxlength="40"
+            placeholder="เพิ่มตัวเลือก…"
+            aria-label="เพิ่มตัวเลือก"
+            class="min-w-0 flex-1 rounded-full border border-stone-200 bg-stone-50 px-4 py-2.5 text-sm outline-none focus:border-stone-900 focus:bg-white"
+          />
+          <button type="submit" class={btnPrimary}>เพิ่ม</button>
+        </form>
+
+        <ul class="mt-4 flex flex-wrap gap-2">
+          {#each options as o (o.id)}
+            <li
+              class="flex items-center gap-0.5 rounded-full border border-stone-200 bg-stone-50 py-0.5 pl-3 text-sm {isHost ||
+              o.added_by === me
+                ? 'pr-0.5'
+                : 'pr-3'}"
+            >
+              {o.title}
+              {#if isHost || o.added_by === me}
+                <button
+                  onclick={() => removeOption(o.id)}
+                  aria-label="ลบ {o.title}"
+                  class="flex size-6 items-center justify-center rounded-full text-stone-400 hover:bg-stone-200 hover:text-stone-900"
+                >
+                  ×
+                </button>
+              {/if}
+            </li>
+          {:else}
+            <li class="text-sm text-stone-400">ยังไม่มีตัวเลือก ลองเพิ่มด้านบน หรือกดจากรายการแนะนำ</li>
+          {/each}
+        </ul>
+
+        {#if suggestions.length > 0}
+          <p class="mt-4 text-xs text-stone-400">แนะนำ (แตะเพื่อเพิ่ม)</p>
+          <ul class="mt-2 flex flex-wrap gap-1.5">
+            {#each suggestions as s (s)}
+              <li>
+                <button
+                  onclick={() => addOption(s)}
+                  class="rounded-full border border-dashed border-stone-300 px-3 py-1 text-sm text-stone-600 hover:border-stone-900 hover:text-stone-900"
+                >
+                  + {s}
+                </button>
+              </li>
+            {/each}
+          </ul>
+        {/if}
+      </section>
+
+      <!-- พร้อม / เริ่มโหวต -->
+      <section class="mt-4">
+        {#if isHost}
+          <button onclick={startVoting} disabled={!canStart} class="{btnPrimary} w-full py-4 text-base">
+            เริ่มโหวต
+          </button>
+          <p class="mt-2 text-center text-xs text-stone-500" role="status">
+            {#if options.length < 2}
+              ต้องมีอย่างน้อย 2 ตัวเลือก
+            {:else if notReady.length > 0}
+              รอ {notReady.map((m) => m.name).join(", ")} กดพร้อม
+            {:else}
+              ทุกคนพร้อมแล้ว เริ่มได้เลย 🎉
+            {/if}
+          </p>
+        {:else}
+          <button
+            onclick={() => (ready = !ready)}
+            aria-pressed={ready}
+            class="w-full rounded-full py-4 text-base font-semibold transition active:scale-[0.98] {ready
+              ? 'bg-emerald-600 text-white hover:bg-emerald-700'
+              : 'bg-stone-900 text-white hover:bg-stone-700'}"
+          >
+            {ready ? "✓ พร้อมแล้ว (กดอีกครั้งเพื่อยกเลิก)" : "พร้อมแล้ว"}
+          </button>
+          <p class="mt-2 text-center text-xs text-stone-500" role="status">
+            {ready ? "รอเจ้าของห้องเริ่มโหวต…" : "เพิ่มตัวเลือกให้ครบ แล้วกดพร้อม"}
+          </p>
+        {/if}
+      </section>
+
+      <!-- ================= VOTING ================= -->
+    {:else if room.status === "voting"}
+      <section class="{card} mt-4">
+        <div class="flex items-center justify-between">
+          <h2 class="text-sm font-bold">เลือก 1 อย่าง</h2>
+          <span class="text-xs text-stone-500" role="status">
+            โหวตแล้ว {votedCount}/{members.length} คน
+          </span>
+        </div>
+
+        <ul class="mt-3 space-y-2">
+          {#each tally as o (o.id)}
+            {@const pct = votes.length ? (o.count / votes.length) * 100 : 0}
+            {@const mine = myVote === o.id}
+            <li>
+              <button
+                onclick={() => castVote(o.id)}
+                aria-pressed={mine}
+                class="relative w-full overflow-hidden rounded-2xl border p-4 text-left transition active:scale-[0.99] {mine
+                  ? 'border-stone-900'
+                  : 'border-stone-200 hover:border-stone-400'}"
+              >
+                <span
+                  class="absolute inset-y-0 left-0 bg-stone-100 transition-[width] duration-500"
+                  style="width: {pct}%"
+                  aria-hidden="true"
+                ></span>
+                <span class="relative flex items-center justify-between gap-3">
+                  <span class="font-medium">
+                    {#if mine}<span aria-hidden="true">✓ </span>{/if}{o.title}
+                  </span>
+                  <span class="text-sm text-stone-500 tabular-nums">{o.count}</span>
+                </span>
+              </button>
+            </li>
+          {/each}
+        </ul>
+      </section>
+
+      <section class="mt-4">
+        {#if isHost}
+          <button
+            onclick={finish}
+            disabled={votes.length === 0}
+            class="w-full rounded-full py-4 text-base font-semibold transition active:scale-[0.98] disabled:opacity-40 {allVoted
+              ? 'bg-brand text-white hover:opacity-90'
+              : 'bg-stone-900 text-white hover:bg-stone-700'}"
+          >
+            {allVoted ? "ทุกคนโหวตครบแล้ว — ประกาศผล" : "ปิดโหวตและประกาศผล"}
+          </button>
+        {:else}
+          <p class="text-center text-sm text-stone-500" role="status">
+            {myVote ? "โหวตแล้ว เปลี่ยนใจได้จนกว่าเจ้าของห้องจะปิดโหวต" : "แตะตัวเลือกเพื่อโหวต"}
+          </p>
+        {/if}
+      </section>
+
+      <!-- ================= DONE ================= -->
+    {:else}
+      <section class="{card} mt-4 text-center">
+        <p class="text-sm text-stone-500">ผลโหวต — เอาอันนี้!</p>
+        <p class="mt-2 text-4xl font-extrabold tracking-tight">
+          <span aria-hidden="true">{category.emoji}</span>
+          {room.winner}
+        </p>
+        {#if tiedCount > 1}
+          <p class="mt-2 text-xs text-stone-500">คะแนนเสมอ {tiedCount} อย่าง ระบบสุ่มตัดสินให้แล้ว 🎲</p>
+        {/if}
+        {#if category.maps && room.winner}
+          <a
+            href={mapsUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            class="{btnGhost} mt-4"
+          >
+            📍 เปิดใน Google Maps
+          </a>
+        {/if}
+      </section>
+
+      <section class="{card} mt-4">
+        <h2 class="text-sm font-bold">คะแนนทั้งหมด</h2>
+        <ul class="mt-3 space-y-3">
+          {#each ranking as o (o.id)}
+            <li>
+              <div class="flex items-center justify-between text-sm">
+                <span class={o.title === room.winner ? "font-bold" : ""}>{o.title}</span>
+                <span class="text-stone-500 tabular-nums">{o.count}</span>
+              </div>
+              {#if o.voters.length}
+                <p class="mt-0.5 text-xs text-stone-400">{o.voters.join(", ")}</p>
+              {/if}
+            </li>
+          {/each}
+        </ul>
+      </section>
+
+      <section class="mt-4">
+        {#if isHost}
+          <button onclick={newRound} class="{btnPrimary} w-full py-4 text-base">เริ่มรอบใหม่</button>
+        {:else}
+          <p class="text-center text-sm text-stone-500" role="status">
+            รอเจ้าของห้องเริ่มรอบใหม่…
+          </p>
+        {/if}
+      </section>
+    {/if}
+  {/if}
+</main>
+
+<!-- Dialog: ถามชื่อก่อนเข้าห้อง -->
+<Dialog.Root
+  open={!loading && !notFound && !fatal && !name}
+  onOpenChange={() => {}}
+>
+  <Dialog.Portal>
+    <Dialog.Overlay
+      class="fixed inset-0 z-40 bg-stone-900/30 backdrop-blur-[2px] data-[state=closed]:animate-fade-out data-[state=open]:animate-fade-in"
+    />
+    <Dialog.Content
+      interactOutsideBehavior="ignore"
+      escapeKeydownBehavior="ignore"
+      class="fixed top-1/2 left-1/2 z-50 w-[calc(100%-2rem)] max-w-sm -translate-x-1/2 -translate-y-1/2 rounded-3xl bg-white p-7 shadow-xl outline-none data-[state=closed]:animate-pop-out data-[state=open]:animate-pop-in"
+    >
+      <Dialog.Title class="text-xl font-extrabold tracking-tight">
+        เพื่อน ๆ เรียกคุณว่าอะไร?
+      </Dialog.Title>
+      <Dialog.Description class="mt-1 text-sm text-stone-500">
+        ชื่อนี้จะแสดงให้คนในห้อง {code} เห็น
+      </Dialog.Description>
+      <form
+        class="mt-5 flex flex-col gap-3"
+        onsubmit={(e) => {
+          e.preventDefault();
+          saveName();
+        }}
+      >
+        <input
+          bind:value={nameInput}
+          maxlength="20"
+          placeholder="ชื่อเล่น"
+          aria-label="ชื่อเล่น"
+          class="rounded-full border border-stone-200 bg-stone-50 px-4 py-3 text-center outline-none focus:border-stone-900 focus:bg-white"
+        />
+        <button type="submit" disabled={!nameInput.trim()} class="{btnPrimary} py-3.5">
+          เข้าห้อง
+        </button>
+      </form>
+    </Dialog.Content>
+  </Dialog.Portal>
+</Dialog.Root>
