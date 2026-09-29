@@ -24,7 +24,7 @@
     try {
       const user = await ensureUser();
       // ล้างห้องที่หมดอายุทุกครั้งที่มีคนสร้างห้อง (สำรองไว้เผื่อ pg_cron ไม่ได้เปิด)
-      void supabase.rpc("cleanup_expired_rooms");
+      void supabase.rpc("cleanup_expired_rooms", { batch_size: 50 });
       for (let i = 0; i < 5; i++) {
         const code = makeCode();
         const { error } = await supabase
