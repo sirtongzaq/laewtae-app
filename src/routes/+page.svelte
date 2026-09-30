@@ -2,6 +2,7 @@
   import { onMount } from "svelte";
   import { Dialog, Label, Switch, Tabs, ToggleGroup } from "bits-ui";
   import Wheel from "$lib/components/Wheel.svelte";
+  import Promo from "$lib/components/Promo.svelte";
   import { categories } from "$lib/data/categories";
   import { toast } from "$lib/toast.svelte";
   import { feedback } from "$lib/feedback.svelte";
@@ -355,6 +356,7 @@
             {nearby.asking ? "กำลังหาตำแหน่ง…" : "ใช้ตำแหน่งจริงของเครื่องให้แม่นขึ้น"}
           </button>
         {/if}
+        <div class="mt-3"><Promo categoryId={category.id} /></div>
       </div>
     </Dialog.Content>
   </Dialog.Portal>

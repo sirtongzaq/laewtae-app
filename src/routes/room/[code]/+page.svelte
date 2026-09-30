@@ -21,6 +21,7 @@
   import { recents } from "$lib/recents.svelte";
   import { nearby } from "$lib/nearby.svelte";
   import Wheel from "$lib/components/Wheel.svelte";
+  import Promo from "$lib/components/Promo.svelte";
   import SwipeDeck from "$lib/components/SwipeDeck.svelte";
 
   /** ข้อมูลที่ host broadcast ให้ทุกเครื่องหมุนวงล้อตัดสินให้เหมือนกัน */
@@ -1158,6 +1159,8 @@
           {/if}
         {/if}
       </section>
+
+      <div class="mt-4"><Promo categoryId={category.id} /></div>
 
       <section class="{card} mt-4">
         <h2 class="text-sm font-bold">คะแนนทั้งหมด</h2>
