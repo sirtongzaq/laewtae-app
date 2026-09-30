@@ -1,42 +1,108 @@
-# sv
+# แล้วแต่ (Laewtae)
 
-Everything you need to build a Svelte project, powered by [`sv`](https://github.com/sveltejs/cli).
+> เลิกแล้วแต่ มาสุ่มกัน
 
-## Creating a project
+เว็บแอปแก้ปัญหา "กินอะไรดี" "ไปไหนดี" "แล้วแต่…" — สุ่มด้วยวงล้อคนเดียว หรือชวนเพื่อนมาโหวต/ปัดตัดสินใจร่วมกันแบบ realtime ไม่ต้องสมัครสมาชิก ออกแบบมาสำหรับมือถือเป็นหลัก
 
-If you're seeing this, you've probably already done this step. Congrats!
+**Stack:** SvelteKit 2 · Svelte 5 (runes) · Tailwind CSS 4 · bits-ui · Supabase (Anonymous auth, Postgres + RLS, Realtime)
 
-```sh
-# create a new project
-npx sv create my-app
+## ทำอะไรได้บ้าง
+
+| โหมด | หน้า | อธิบาย |
+|---|---|---|
+| 🎲 สุ่มเลย | `/` | หมุนวงล้อสุ่มคนเดียว มี 5 หมวด: กินอะไรดี, คาเฟ่ / ของหวาน, ไปไหนดี, ทำอะไรดี, กำหนดเอง แก้/เพิ่ม/ลบตัวเลือกได้ เลือกความเร็ว (เร็ว/ปกติ/ช้า) |
+| 🗳️ โหวตกับเพื่อน | `/vote` | สร้างห้องรหัส 5 ตัวอักษร ส่งลิงก์ให้เพื่อน ทุกคนช่วยเพิ่มตัวเลือก กดพร้อม แล้วโหวตคนละ 1 ตัวเลือก (เปลี่ยนใจได้) |
+| 👆 ปัดกับเพื่อน | `/swipe` | ปัดขวา (ถูกใจ) / ซ้าย (ไม่เอา) ทีละใบ ตัวเลือกที่ได้คะแนนถูกใจสูงสุดชนะ |
+| 🕘 ประวัติ | `/history` | ผลที่เคยสุ่ม/ตัดสิน และห้องล่าสุดที่เคยเข้า (เก็บในเครื่องนี้เท่านั้น) |
+
+รายละเอียดที่น่าสนใจ
+
+- **Realtime** เห็นเพื่อนเข้าห้อง กดพร้อม โหวต/ปัด และความคืบหน้าของแต่ละคนแบบสดๆ (Supabase Realtime + Presence)
+- **นับถอยหลังอัตโนมัติ** เมื่อมีเพื่อนอย่างน้อย 1 คน + ทุกคนกดพร้อม + มีตัวเลือกอย่างน้อย 2 ตัว จะนับถอยหลังแล้วเริ่มโหวตเอง และประกาศผลเองเมื่อทุกคนโหวต/ปัดครบ
+- **คะแนนเสมอ → วงล้อตัดสิน** ถ้าเสมอ (หรือโหมดปัดแล้วไม่มีใครถูกใจอะไรเลย) วงล้อจะหมุนตัดสินให้ทุกเครื่องเห็นพร้อมกัน
+- **ไม่สุ่มซ้ำ** ตัวเลือก "เอาผลที่ได้ออกจากวงล้อ" และ "ไม่ซ้ำกับที่เพิ่งได้ภายใน 3/7/14 วัน"
+- **ค้นหาใกล้ตัว** ผลลัพธ์หมวดกิน/คาเฟ่/ไปไหน มีลิงก์ค้นหาใน Google Maps (ขอตำแหน่งจริงของเครื่องเพิ่มได้ ถ้าผู้ใช้อนุญาต)
+- **เสียง + สั่น** เปิด/ปิดได้ · **ธีมสว่าง/มืด** สลับได้ จำค่าไว้ในเครื่อง
+- **ไม่ต้องล็อกอิน** ใช้ Supabase Anonymous sign-in เบื้องหลัง
+
+## เริ่มใช้งาน
+
+ต้องมี Node.js และโปรเจกต์ Supabase
+
+```bash
+npm install
+cp .env.example .env    # แล้วกรอกค่าตามด้านล่าง
+npm run dev             # http://localhost:5173
 ```
 
-To recreate this project with the same configuration:
+| ตัวแปร | ค่า |
+|---|---|
+| `PUBLIC_SUPABASE_URL` | Project URL (`https://xxxx.supabase.co`) |
+| `PUBLIC_SUPABASE_KEY` | คีย์สาธารณะ `sb_publishable_...` (หรือ anon key) — ใส่ในเบราว์เซอร์ได้ ความปลอดภัยพึ่ง RLS |
 
-```sh
-# recreate this project
-npx sv@0.17.1 create --template minimal --types ts --install npm ./
+| คำสั่ง | ทำอะไร |
+|---|---|
+| `npm run dev` | รันโหมดพัฒนา |
+| `npm run build` / `npm run preview` | build และดูตัวอย่าง production |
+| `npm run check` | ตรวจ Svelte + TypeScript |
+
+## ตั้งค่า Supabase
+
+1. **เปิด Anonymous sign-ins** — Dashboard → Authentication → Sign In / Providers → เปิด *Anonymous sign-ins*
+2. **เปิด extension `pg_cron`** — Database → Extensions (ใช้ตั้งเวลาล้างห้องหมดอายุ)
+3. **รันไฟล์ SQL ตามลำดับนี้** ใน SQL Editor (วางทั้งไฟล์แล้ว Run · ทุกไฟล์รันซ้ำได้ ไม่พัง)
+
+| ลำดับ | ไฟล์ | ทำอะไร |
+|---|---|---|
+| 1 | `supabase/schema.sql` | ตาราง `rooms`, `options`, `votes` + RLS + Realtime |
+| 2 | `supabase/expiry.sql` | ห้องหมดอายุอัตโนมัติ + ฟังก์ชันล้างห้องเก่า + ตั้ง pg_cron |
+| 3 | `supabase/swipe.sql` | โหมดปัด (ตาราง `swipes`) |
+| 4 | `supabase/cleanup.sql` | ต่ออายุห้องตามการใช้งาน, ห้องที่จบแล้วหมดอายุเร็วขึ้น, ลบแบบ batch ไม่กระทบคนที่กำลังเล่น |
+| 5 | `supabase/limits.sql` | เพดานการใช้งาน (trigger ที่ฝั่งฐานข้อมูล) |
+| 6 | `supabase/privacy.sql` | จำกัดให้อ่านห้องได้เฉพาะสมาชิก + ฟังก์ชัน `join_room` |
+
+## เพดานการใช้งานและอายุห้อง
+
+บังคับที่ฐานข้อมูล (ไม่ใช่แค่หน้าเว็บ) ค่าต้องตรงกับ `src/lib/room.ts`
+
+- ตัวเลือกต่อห้อง **30** · คนต่อห้อง **10** · ห้องที่เปิดอยู่ต่อเจ้าของ **10** · สร้างห้องได้ **3 ห้อง/นาที**
+- ห้องใหม่อยู่ **6 ชั่วโมง** และต่ออายุตามการใช้งาน (เพิ่มตัวเลือก/โหวต/ปัด) · ห้องที่เล่นจบแล้วหมดอายุภายใน **3 ชั่วโมง**
+- ห้องหมดอายุจะถูกลบหลังพ้นช่วงผ่อนผัน 1 ชั่วโมง โดย pg_cron · ผู้ใช้ anonymous ที่ไม่ได้ใช้งานเกิน 30 วันจะถูกล้าง (แอป sign in ใหม่ให้เอง)
+
+## ความเป็นส่วนตัวและความปลอดภัย
+
+- อ่านข้อมูลห้องได้เฉพาะ **สมาชิกของห้อง** — เข้าห้องผ่านฟังก์ชัน `join_room(รหัส)` เท่านั้น จึงไล่ดูรหัสห้องของคนอื่นไม่ได้ (ต้องรู้รหัส 5 ตัวอักษรที่ถูกต้อง)
+- เขียนข้อมูลได้เฉพาะของตัวเอง เช่น โหวต/ปัดได้เฉพาะตอนห้องอยู่สถานะโหวต, ล้างผลได้เฉพาะเจ้าของห้อง
+- ประวัติการสุ่มและห้องล่าสุดเก็บใน **localStorage** ของเบราว์เซอร์ ไม่ขึ้นเซิร์ฟเวอร์ ไม่ซิงก์ข้ามเครื่อง และหายเมื่อล้างข้อมูลเบราว์เซอร์
+
+## โครงสร้างโปรเจกต์
+
+```
+src/
+  routes/
+    +page.svelte            สุ่มเลย (วงล้อ)
+    vote/  swipe/           สร้าง/เข้าห้อง โหมดโหวต / ปัด
+    room/[code]/            หน้าห้อง (lobby → voting → done, วงล้อตัดสินตอนเสมอ)
+    history/                ประวัติการสุ่ม
+    +layout.svelte          หัวเว็บ, เมนู, สลับธีม, เสียง/สั่น
+  lib/
+    supabase.ts             client + ensureUser() (anonymous sign-in, ฟื้น session เอง)
+    room.ts                 ชนิดข้อมูลห้อง, เพดาน, สร้าง/ตรวจรหัสห้อง
+    data/categories.ts      หมวดหมู่และตัวเลือกเริ่มต้น
+    components/             Wheel, SwipeDeck, RoomEntry, Toaster, Tip
+    *.svelte.ts             state ฝั่งเครื่อง: theme, feedback, recents, nearby, toast
+supabase/                   ไฟล์ SQL (รันตามลำดับด้านบน)
+static/                     asset สาธารณะ
 ```
 
-## Developing
+สีและธีมทั้งแอปอยู่ที่ `src/app.css` (ธีมมืดสลับพาเลตต์ `stone-*` ทั้งชุด จึงไม่ต้องใส่ `dark:` ทีละคลาส)
 
-Once you've created a project and installed dependencies with `npm install` (or `pnpm install` or `yarn`), start a development server:
+## Deploy
 
-```sh
-npm run dev
+ใช้ `@sveltejs/adapter-auto` ซึ่งเลือก adapter ให้เองตามแพลตฟอร์ม (โปรเจกต์นี้ผูกกับ Vercel อยู่แล้ว)
 
-# or start the server and open the app in a new browser tab
-npm run dev -- --open
-```
+1. เชื่อม repo กับ Vercel
+2. ตั้ง env `PUBLIC_SUPABASE_URL` และ `PUBLIC_SUPABASE_KEY` ใน Project Settings → Environment Variables
+3. ใน Supabase → Authentication → URL Configuration เพิ่มโดเมนที่ deploy เป็น Site URL
 
-## Building
-
-To create a production version of your app:
-
-```sh
-npm run build
-```
-
-You can preview the production build with `npm run preview`.
-
-> To deploy your app, you may need to install an [adapter](https://svelte.dev/docs/kit/adapters) for your target environment.
+ไฟล์ `.env` ถูก ignore ไว้แล้ว มีเฉพาะ `.env.example` ที่ถูก commit
